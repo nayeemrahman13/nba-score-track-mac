@@ -93,8 +93,15 @@ function renderCurrentDate() {
 
 function getTeamLogo(tricode) {
     if (!tricode) return 'https://a.espncdn.com/i/teamlogos/nba/500/nba.png';
-    // ESPN scoreboard logos are very clean, transparent, and consistent
-    return `https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/${tricode.toLowerCase()}.png`;
+
+    // Some ESPN scoreboard filenames don't match the NBA tricode
+    const mapping = {
+        'UTA': 'utah',
+        'NOP': 'no'
+    };
+
+    const filename = mapping[tricode] || tricode.toLowerCase();
+    return `https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/${filename}.png`;
 }
 
 function toggleGame(gameId) {
