@@ -40,12 +40,13 @@ mb.on('after-create-window', () => {
     }
 });
 
-ipcMain.handle('fetch-nba-scores', async () => {
+ipcMain.handle('fetch-nba-scores', async (event, dates) => {
     return new Promise((resolve, reject) => {
         const pythonPath = path.join(__dirname, 'venv/bin/python3');
         const scriptPath = path.join(__dirname, 'src/python/fetch_scores.py');
 
-        exec(`"${pythonPath}" "${scriptPath}"`, (error, stdout, stderr) => {
+        const dateArgs = Array.isArray(dates) ? dates.map(d => `"${d}"`).join(' ') : (dates ? `"${dates}"` : '');
+        exec(`"${pythonPath}" "${scriptPath}" ${dateArgs}`, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
             if (error) {
                 console.error(`exec error: ${error}`);
                 reject(error);
