@@ -1,13 +1,15 @@
 import { menubar } from 'menubar';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { app } from 'electron';
+import { app, ipcMain } from 'electron';
+import { exec } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const isDev = !app.isPackaged;
+const PORT = process.env.PORT || 3000;
 const url = isDev
-    ? 'http://localhost:3000'
+    ? `http://localhost:${PORT}`
     : `file://${path.join(__dirname, 'dist/index.html')}`;
 
 const mb = menubar({
@@ -36,4 +38,30 @@ mb.on('after-create-window', () => {
     if (isDev && mb.window) {
         mb.window.webContents.openDevTools({ mode: 'detach' });
     }
+});
+
+ipcMain.handle('fetch-nba-scores', async () => {
+    return new Promise((resolve, reject) => {
+        const pythonPath = path.join(__dirname, 'venv/bin/python3');
+        const scriptPath = path.join(__dirname, 'src/python/fetch_scores.py');
+
+        exec(`"${pythonPath}" "${scriptPath}"`, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`exec error: ${error}`);
+                reject(error);
+                return;
+            }
+            try {
+                const data = JSON.parse(stdout);
+                resolve(data);
+            } catch (parseError) {
+                console.error(`parse error: ${parseError}`);
+                reject(parseError);
+            }
+        });
+    });
+});
+
+ipcMain.handle('quit-app', () => {
+    app.quit();
 });

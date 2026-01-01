@@ -11,7 +11,8 @@
     "start": "electron ."
   },
   "dependencies": {
-    "menubar": "^9.4.1"
+    "menubar": "^9.4.1",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.17",
