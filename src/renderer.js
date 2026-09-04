@@ -319,6 +319,23 @@ function renderFinishedOrUpcomingGame(game) {
 updateScores();
 
 // Update every minute (mainly for "Today")
-setInterval(() => updateScores(false), 60000);
+setInterval(() => {
+    if (document.visibilityState === 'visible') {
+        updateScores(false);
+    }
+}, 60000);
+
 // Full refresh of neighboring dates every 10 minutes
-setInterval(() => updateScores(true), 600000);
+setInterval(() => {
+    if (document.visibilityState === 'visible') {
+        updateScores(true);
+    }
+}, 600000);
+
+// Fetch immediately when window becomes visible if data is stale
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        console.log('Window became visible, refreshing scores...');
+        updateScores(false);
+    }
+});

@@ -12,6 +12,16 @@ const url = isDev
     ? `http://localhost:${PORT}`
     : `file://${path.join(__dirname, 'dist/index.html')}`;
 
+const HEADERS = {
+    'Host': 'stats.nba.com',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://www.nba.com',
+    'Referer': 'https://www.nba.com/',
+    'Connection': 'keep-alive',
+};
+
 const mb = menubar({
     index: url,
     browserWindow: {
@@ -20,12 +30,14 @@ const mb = menubar({
         transparent: true,
         frame: false,
         resizable: false,
+        vibrancy: 'under-window', // macOS exclusive vibrancy effect
+        visualEffectState: 'active',
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false,
         },
     },
-    icon: path.join(__dirname, 'iconTemplate.png'), // Standard macOS menu bar icon template
+    icon: path.join(__dirname, 'iconTemplate.png'),
     showDockIcon: false,
 });
 
@@ -40,27 +52,123 @@ mb.on('after-create-window', () => {
     }
 });
 
-ipcMain.handle('fetch-nba-scores', async (event, dates) => {
-    return new Promise((resolve, reject) => {
-        const pythonPath = path.join(__dirname, 'venv/bin/python3');
-        const scriptPath = path.join(__dirname, 'src/python/fetch_scores.py');
+function getTeamLeaders(players) {
+    if (!players || !Array.isArray(players)) return [];
 
-        const dateArgs = Array.isArray(dates) ? dates.map(d => `"${d}"`).join(' ') : (dates ? `"${dates}"` : '');
-        exec(`"${pythonPath}" "${scriptPath}" ${dateArgs}`, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error(`exec error: ${error}`);
-                reject(error);
-                return;
+    const getVal = (p, key) => (p.statistics && p.statistics[key]) || 0;
+
+    return players
+        .sort((a, b) => {
+            const pts = getVal(b, 'points') - getVal(a, 'points');
+            if (pts !== 0) return pts;
+            const reb = getVal(b, 'reboundsTotal') - getVal(a, 'reboundsTotal');
+            if (reb !== 0) return reb;
+            return getVal(b, 'assists') - getVal(a, 'assists');
+        })
+        .slice(0, 3)
+        .map(p => ({
+            name: p.name || 'Unknown',
+            nameI: p.nameI || (p.name ? `${p.name[0]}. ${p.name.split(' ').pop()}` : 'Player'),
+            position: p.position || '',
+            points: getVal(p, 'points'),
+            rebounds: getVal(p, 'reboundsTotal'),
+            assists: getVal(p, 'assists'),
+        }));
+}
+
+async function fetchGameLeaders(gameId) {
+    try {
+        const response = await fetch(`https://cdn.nba.com/static/json/liveData/boxscore/boxscore_${gameId}.json`, { headers: HEADERS });
+        if (!response.ok) return null;
+        const data = await response.json();
+        const gameBox = data.game;
+        if (!gameBox) return null;
+
+        return {
+            homeLeaders: getTeamLeaders(gameBox.homeTeam?.players),
+            awayLeaders: getTeamLeaders(gameBox.awayTeam?.players),
+        };
+    } catch (e) {
+        console.error(`Error fetching leaders for ${gameId}:`, e);
+        return null;
+    }
+}
+
+function getPrimaryBroadcaster(broadcasters) {
+    if (!broadcasters) return "LEAGUE PASS";
+
+    const national = broadcasters.nationalBroadcasters || [];
+    if (national.length > 0) {
+        const display = national[0].broadcastDisplay || '';
+        if (display.toUpperCase() === 'AMAZON') return 'Prime Video';
+        return display;
+    }
+
+    const nationalOtt = broadcasters.nationalOttBroadcasters || [];
+    if (nationalOtt.length > 0) {
+        return nationalOtt[0].broadcastDisplay || 'LEAGUE PASS';
+    }
+
+    return "LEAGUE PASS";
+}
+
+async function fetchSingleDate(targetDate) {
+    try {
+        const response = await fetch(`https://stats.nba.com/stats/scoreboardv3?GameDate=${targetDate}&LeagueID=00`, { headers: HEADERS });
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const gamesRaw = data.scoreboard?.games || [];
+
+        const formattedGames = await Promise.all(gamesRaw.map(async (game) => {
+            const gameId = game.gameId;
+            const statusId = game.gameStatus;
+
+            const g = {
+                gameId: gameId,
+                status: statusId,
+                statusText: game.gameStatusText || '',
+                broadcaster: getPrimaryBroadcaster(game.broadcasters),
+                homeTeam: {
+                    teamTricode: game.homeTeam?.teamTricode,
+                    score: game.homeTeam?.score || 0,
+                    leaders: []
+                },
+                awayTeam: {
+                    teamTricode: game.awayTeam?.teamTricode,
+                    score: game.awayTeam?.score || 0,
+                    leaders: []
+                },
+                period: game.period || 0,
+                gameTimeUTC: game.gameTimeUTC || '',
+            };
+
+            if (statusId === 2 || statusId === 3) {
+                const leaders = await fetchGameLeaders(gameId);
+                if (leaders) {
+                    g.homeTeam.leaders = leaders.homeLeaders;
+                    g.awayTeam.leaders = leaders.awayLeaders;
+                }
             }
-            try {
-                const data = JSON.parse(stdout);
-                resolve(data);
-            } catch (parseError) {
-                console.error(`parse error: ${parseError}`);
-                reject(parseError);
-            }
-        });
-    });
+
+            return g;
+        }));
+
+        return formattedGames;
+    } catch (e) {
+        console.error(`Error fetching scores for ${targetDate}:`, e);
+        return [];
+    }
+}
+
+ipcMain.handle('fetch-nba-scores', async (event, dates) => {
+    const dateArray = Array.isArray(dates) ? dates : [dates];
+    const results = {};
+
+    await Promise.all(dateArray.map(async (d) => {
+        results[d] = await fetchSingleDate(d);
+    }));
+
+    return results;
 });
 
 ipcMain.handle('quit-app', () => {
