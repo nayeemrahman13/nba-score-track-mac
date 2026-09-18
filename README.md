@@ -1,3 +1,34 @@
-# NBA Stat Tracking App
+# NBA Score Tracker
 
-A macOS app for tracking NBA stats.
+A native SwiftUI macOS menu-bar app for NBA scores and player leaders. The older Electron implementation remains in the repository, but is independent of the native app.
+
+## Build the native app
+
+Open `NBAScoreTracker/NBAScoreTracker.xcodeproj` in Xcode and run the `NBAScoreTracker` scheme (macOS 13+). From a terminal:
+
+```sh
+xcodebuild -project NBAScoreTracker/NBAScoreTracker.xcodeproj \
+  -scheme NBAScoreTracker -configuration Debug build
+```
+
+## Refresh architecture
+
+- `NBAClient` owns HTTP, decoding, CDN date validation, and the dated stats fallback. Requests have bounded timeouts and HTTP failures are thrown, never converted to empty schedules. Box scores use a separate connection pool.
+- `NBAService` owns published UI state and coalesces overlapping refreshes. Dates publish independently; failures retain the last successful games and timestamp. Box-score enrichment cannot overwrite scoreboard scores, erase another date's changes, or apply live details after a game becomes final.
+- While visible, polling waits 15 seconds between completed refreshes with live games, or 60 seconds otherwise. Hidden windows use 5/15-minute intervals. Unselected non-live dates refresh at most every five minutes. Each failed date backs off independently from 30 seconds to five minutes, without slowing successful live dates. Manual refresh bypasses freshness/backoff and joins any request already running.
+- Window visibility, wake, clock, timezone, and calendar-day notifications update polling. Dates use the local Gregorian calendar consistently; the CDN's `gameDate` must match before its response is accepted.
+- `BoxScoreCache` accepts only confirmed final results with matching scoreboard totals. Entries expire after six hours to allow official corrections. The v2 directory excludes potentially incomplete data from the previous implementation.
+
+Settings opens in a retained, independent window rather than a sheet on the transient menu-bar panel, so login-item approval and focus changes cannot dismiss it. Login-item status is refreshed when the app becomes active again.
+
+The UI distinguishes initial loading, a successful empty schedule, initial failure, and failure with retained scores. Refresh is available through the toolbar or ⌘R. Game rows are native keyboard-accessible buttons, score updates do not animate, and press feedback respects Reduce Motion. Tipoff times use the local timezone. Missing broadcast information is omitted rather than guessed.
+
+## Verification
+
+There is no configured test or lint suite. For refresh changes, verify concurrent refreshes, offline recovery, successful empty schedules, midnight rollover, live-to-final cache transitions, and a slow box score alongside a faster scoreboard. Inspect light/dark appearance, keyboard expansion, refresh/retry, settings, and reopening the menu-bar window.
+
+The September 2026 refactor passed direct Swift compilation and temporary fixture-based regression checks, including HTTP errors, malformed payloads, CDN date mismatch, cache expiry, and preservation of scores/leaders during overlapping work. Offscreen AppKit renders were reviewed in light and dark mode. The local `xcodebuild` installation failed before compilation with a missing `DVTDownloads` symbol in `IDESimulatorFoundation`; direct `swiftc` compilation and linking succeeded. The live NBA CDN returned HTTP 403 in this environment, so real live-game updates still need verification on a working feed. Desktop UI automation also timed out; interactive keyboard/window behavior needs a manual check.
+
+## Legacy Electron app
+
+`npm install`, `npm run build`, and `npm start` apply only to the Electron implementation. `src/python/fetch_scores.py` is unused by either running app.

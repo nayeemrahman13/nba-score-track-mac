@@ -1,16 +1,17 @@
 import Foundation
 
 /// Caches box score data for finished games to avoid repeated API calls.
-/// Finished games are cached permanently since their data never changes.
+/// Only verified final box scores are cached, with a TTL for official corrections.
 actor BoxScoreCache {
     static let shared = BoxScoreCache()
     
     private let cacheDirectory: URL
     private var memoryCache: [String: CachedBoxScore] = [:]
     
-    private init() {
+    init(directory: URL? = nil) {
         let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        cacheDirectory = cachesDir.appendingPathComponent("NBAScoreTracker/boxscores", isDirectory: true)
+        // Versioned directory ignores old entries that may contain live snapshots.
+        cacheDirectory = directory ?? cachesDir.appendingPathComponent("NBAScoreTracker/boxscores-v2", isDirectory: true)
         
         // Create cache directory if needed
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
@@ -21,12 +22,12 @@ actor BoxScoreCache {
     /// Returns cached box score if available, nil otherwise
     func get(gameId: String) -> CachedBoxScore? {
         // Check memory cache first
-        if let cached = memoryCache[gameId] {
+        if let cached = memoryCache[gameId], Date().timeIntervalSince(cached.cachedAt) < 21_600 {
             return cached
         }
         
         // Check disk cache
-        if let cached = loadFromDisk(gameId: gameId) {
+        if let cached = loadFromDisk(gameId: gameId), Date().timeIntervalSince(cached.cachedAt) < 21_600 {
             memoryCache[gameId] = cached
             return cached
         }
@@ -36,17 +37,15 @@ actor BoxScoreCache {
     
     /// Saves box score to cache (both memory and disk for finished games)
     func save(gameId: String, boxScore: CachedBoxScore, isFinished: Bool) {
+        guard isFinished else { return }
+        if memoryCache.count >= 100 { memoryCache.removeAll() }
         memoryCache[gameId] = boxScore
-        
-        // Only persist to disk for finished games
-        if isFinished {
-            saveToDisk(gameId: gameId, boxScore: boxScore)
-        }
+        saveToDisk(gameId: gameId, boxScore: boxScore)
     }
     
     /// Checks if a finished game's box score is already cached
     func hasCached(gameId: String) -> Bool {
-        return memoryCache[gameId] != nil || fileExists(gameId: gameId)
+        return get(gameId: gameId) != nil
     }
     
     // MARK: - Disk Operations
@@ -68,7 +67,7 @@ actor BoxScoreCache {
     private func saveToDisk(gameId: String, boxScore: CachedBoxScore) {
         let url = fileURL(for: gameId)
         guard let data = try? JSONEncoder().encode(boxScore) else { return }
-        try? data.write(to: url)
+        try? data.write(to: url, options: .atomic)
     }
 }
 
@@ -78,12 +77,16 @@ struct CachedBoxScore: Codable {
     let gameId: String
     let homeTeam: CachedTeamBoxScore
     let awayTeam: CachedTeamBoxScore
+    let homeScore: Int?
+    let awayScore: Int?
     let cachedAt: Date
     
-    init(gameId: String, homeTeam: CachedTeamBoxScore, awayTeam: CachedTeamBoxScore) {
+    init(gameId: String, homeTeam: CachedTeamBoxScore, awayTeam: CachedTeamBoxScore, homeScore: Int? = nil, awayScore: Int? = nil) {
         self.gameId = gameId
         self.homeTeam = homeTeam
         self.awayTeam = awayTeam
+        self.homeScore = homeScore
+        self.awayScore = awayScore
         self.cachedAt = Date()
     }
 }

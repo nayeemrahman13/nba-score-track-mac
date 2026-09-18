@@ -6,6 +6,7 @@ struct CDNScoreboardResponse: Codable {
 }
 
 struct CDNScoreboard: Codable {
+    let gameDate: String?
     let games: [CDNGame]
 }
 
@@ -76,6 +77,8 @@ struct BoxscoreResponse: Codable {
 }
 
 struct BoxscoreGame: Codable {
+    let gameId: String?
+    let gameStatus: Int?
     let homeTeam: BoxscoreTeam?
     let awayTeam: BoxscoreTeam?
 }
@@ -114,8 +117,8 @@ struct Game: Identifiable {
     let status: GameStatus
     let statusText: String
     let broadcaster: String
-    let homeTeam: Team
-    let awayTeam: Team
+    var homeTeam: Team
+    var awayTeam: Team
     let period: Int
     let gameTimeUTC: String
     
@@ -127,7 +130,7 @@ struct Game: Identifiable {
 }
 
 struct Team: Identifiable {
-    let id = UUID()
+    var id: String { tricode }
     let tricode: String
     let score: Int
     var leaders: [Player]
@@ -140,11 +143,26 @@ struct Team: Identifiable {
 }
 
 struct Player: Identifiable {
-    let id = UUID()
+    var id: String { name }
     let name: String
     let nameI: String
     let position: String
     let points: Int
     let rebounds: Int
     let assists: Int
+}
+
+// A single date convention shared by requests and tabs. CDN dates are checked
+// before use because its "today" may differ from the user's local calendar day.
+enum ScoreDate {
+    static func key(offset: Int = 0, now: Date = Date()) -> String {
+        let calendar = Calendar.current
+        let date = calendar.date(byAdding: .day, value: offset, to: now) ?? now
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
 }

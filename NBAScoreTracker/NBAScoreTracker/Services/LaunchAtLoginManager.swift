@@ -1,48 +1,33 @@
 import Foundation
 import ServiceManagement
 
-/// Manages the "Launch at Login" functionality using the modern ServiceManagement framework.
-/// Works on macOS 13+ without requiring a helper app.
-class LaunchAtLoginManager: ObservableObject {
+/// Reflect the OS state after each operation; a failed registration must not
+/// recursively trigger an unregister operation through a property observer.
+@MainActor
+final class LaunchAtLoginManager: ObservableObject {
     static let shared = LaunchAtLoginManager()
-    
-    @Published var isEnabled: Bool {
-        didSet {
-            if isEnabled {
-                enable()
-            } else {
-                disable()
-            }
-        }
+    @Published private(set) var isEnabled = false
+    @Published private(set) var requiresApproval = false
+    @Published private(set) var errorMessage: String?
+
+    private init() { refresh() }
+
+    func refresh() {
+        let status = SMAppService.mainApp.status
+        isEnabled = status == .enabled || status == .requiresApproval
+        requiresApproval = status == .requiresApproval
     }
-    
-    private init() {
-        // Check current status on init
-        if #available(macOS 13.0, *) {
-            isEnabled = SMAppService.mainApp.status == .enabled
-        } else {
-            isEnabled = false
+
+    func setEnabled(_ enabled: Bool) {
+        errorMessage = nil
+        do {
+            if enabled { try SMAppService.mainApp.register() }
+            else { try SMAppService.mainApp.unregister() }
+        } catch {
+            errorMessage = "Couldn't change launch at login. Try again in System Settings."
         }
+        refresh()
     }
-    
-    private func enable() {
-        if #available(macOS 13.0, *) {
-            do {
-                try SMAppService.mainApp.register()
-            } catch {
-                print("Failed to enable launch at login: \(error)")
-                isEnabled = false
-            }
-        }
-    }
-    
-    private func disable() {
-        if #available(macOS 13.0, *) {
-            do {
-                try SMAppService.mainApp.unregister()
-            } catch {
-                print("Failed to disable launch at login: \(error)")
-            }
-        }
-    }
+
+    func openSystemSettings() { SMAppService.openSystemSettingsLoginItems() }
 }

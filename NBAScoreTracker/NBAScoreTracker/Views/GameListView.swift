@@ -59,18 +59,18 @@ struct GameListView: View {
         VStack(spacing: 8) {
             Image(systemName: "sportscourt")
                 .font(.system(size: 32, weight: .light))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             
-            Text("No Games")
+            Text("No games scheduled")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.secondary)
             
-            Text(selectedDate)
+            Text("\(selectedDate). Check another day for matchups.")
                 .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
+        .padding(.vertical, 70)
     }
     
     private func sectionHeader(_ title: String, isLive: Bool = false) -> some View {
@@ -89,7 +89,7 @@ struct GameListView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
-        .background(.ultraThickMaterial)
+        .background(.regularMaterial)
     }
     
     private var liveGames: [Game] { games.filter { $0.status == .live } }
