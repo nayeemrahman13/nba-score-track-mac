@@ -4,10 +4,21 @@ struct GameRowView: View {
     let game: Game
     @State private var isExpanded = false
     @State private var isHovering = false
+    @FocusState private var isFocused: Bool
     
     var body: some View {
         VStack(spacing: 0) {
-            mainContent
+            if game.status == .upcoming {
+                mainContent
+            } else {
+                Button { isExpanded.toggle() } label: { mainContent }
+                    .buttonStyle(ScoreRowButtonStyle())
+                    .focused($isFocused)
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(isFocused ? Color.accentColor : .clear, lineWidth: 2))
+                    .accessibilityLabel("\(game.awayTeam.tricode) at \(game.homeTeam.tricode), \(game.statusText)")
+                    .accessibilityValue("\(game.awayTeam.score) to \(game.homeTeam.score), \(isExpanded ? "expanded" : "collapsed")")
+                    .accessibilityHint("Show or hide player leaders")
+            }
             
             if isExpanded && game.status != .upcoming {
                 expandedContent
@@ -19,13 +30,7 @@ struct GameRowView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onHover { isHovering = $0 }
-        .onTapGesture {
-            if game.status != .upcoming {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isExpanded.toggle()
-                }
-            }
-        }
+
     }
     
     // MARK: - Main Content
@@ -34,8 +39,8 @@ struct GameRowView: View {
         HStack(spacing: 12) {
             // Teams Column
             VStack(alignment: .leading, spacing: 4) {
-                teamRow(game.homeTeam, isWinner: game.status == .finished && game.homeTeam.score > game.awayTeam.score)
                 teamRow(game.awayTeam, isWinner: game.status == .finished && game.awayTeam.score > game.homeTeam.score)
+                teamRow(game.homeTeam, isWinner: game.status == .finished && game.homeTeam.score > game.awayTeam.score)
             }
             
             Spacer()
@@ -43,7 +48,7 @@ struct GameRowView: View {
             // Status Column
             VStack(alignment: .trailing, spacing: 4) {
                 statusLabel
-                if game.status == .upcoming {
+                if !game.broadcaster.isEmpty {
                     broadcasterBadge
                 }
             }
@@ -57,19 +62,23 @@ struct GameRowView: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
         .contentShape(Rectangle())
     }
     
     private func teamRow(_ team: Team, isWinner: Bool) -> some View {
         HStack(spacing: 8) {
-            AsyncImage(url: team.logoURL) { image in
-                image.resizable().aspectRatio(contentMode: .fit)
-            } placeholder: {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.secondary.opacity(0.2))
+            AsyncImage(url: team.logoURL) { phase in
+                if let image = phase.image {
+                    image.resizable().aspectRatio(contentMode: .fit)
+                } else {
+                    Image(systemName: "basketball")
+                        .font(.system(size: 17))
+                        .foregroundStyle(.secondary)
+                }
             }
-            .frame(width: 18, height: 18)
+            .frame(width: 22, height: 22)
+            .accessibilityHidden(true)
             
             Text(team.tricode)
                 .font(.system(size: 13, weight: isWinner ? .bold : .medium))
@@ -77,9 +86,10 @@ struct GameRowView: View {
             
             if game.status != .upcoming {
                 Text("\(team.score)")
-                    .font(.system(size: 13, weight: isWinner ? .bold : .regular, design: .rounded))
+                    .font(.system(size: 16, weight: isWinner ? .bold : .medium, design: .rounded))
+                    .frame(minWidth: 32, alignment: .trailing)
                     .monospacedDigit()
-                    .foregroundStyle(isWinner ? .primary : .secondary)
+                    .foregroundStyle(game.status == .live || isWinner ? .primary : .secondary)
             }
         }
     }
@@ -97,16 +107,30 @@ struct GameRowView: View {
                     .foregroundStyle(.red)
             }
         case .finished:
-            Text("Final")
+            Text(game.statusText.isEmpty ? "Final" : game.statusText)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
         case .upcoming:
-            Text(game.statusText)
+            Text(localStartTime)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
         }
     }
     
+    private var localStartTime: String {
+        let formatter = ISO8601DateFormatter()
+        var date = formatter.date(from: game.gameTimeUTC)
+        if date == nil {
+            formatter.formatOptions.insert(.withFractionalSeconds)
+            date = formatter.date(from: game.gameTimeUTC)
+        }
+        // Preserve special NBA statuses such as postponed, rather than showing
+        // the original tipoff time as though the game were still scheduled.
+        let status = game.statusText.lowercased()
+        if status.contains("postpon") || status.contains("cancel") || status.contains("tbd") { return game.statusText }
+        return date?.formatted(date: .omitted, time: .shortened) ?? game.statusText
+    }
+
     private var broadcasterBadge: some View {
         Text(game.broadcaster)
             .font(.system(size: 9, weight: .semibold))
@@ -173,4 +197,16 @@ struct GameRowView: View {
     .padding()
     .frame(width: 340)
     .background(.ultraThickMaterial)
+}
+
+/// Native focus/keyboard semantics, with immediate pressed feedback. No repeated
+/// expansion animation or score-counting animation in this glanceable utility.
+private struct ScoreRowButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.primary.opacity(configuration.isPressed ? 0.07 : 0))
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
+    }
 }

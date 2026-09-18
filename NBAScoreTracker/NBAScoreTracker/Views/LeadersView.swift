@@ -7,14 +7,15 @@ struct LeadersView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("\(teamName) Leaders")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
             
             ForEach(leaders) { player in
                 HStack(spacing: 8) {
                     Text(player.name)
                         .font(.system(size: 11))
                         .lineLimit(1)
+                        .help(player.name)
                     
                     Spacer()
                     
@@ -39,8 +40,8 @@ struct LeadersView: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .monospacedDigit()
             Text(label)
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
         }
         .frame(width: 28)
     }
