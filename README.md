@@ -25,7 +25,20 @@ The UI distinguishes initial loading, a successful empty schedule, initial failu
 
 ## Verification
 
-There is no configured test or lint suite. For refresh changes, verify concurrent refreshes, offline recovery, successful empty schedules, midnight rollover, live-to-final cache transitions, and a slow box score alongside a faster scoreboard. Inspect light/dark appearance, keyboard expansion, refresh/retry, settings, and reopening the menu-bar window.
+There is no configured test or lint suite. Focused PR-review regressions are available as a standalone Swift executable:
+
+```sh
+xcrun swiftc -parse-as-library -module-cache-path /tmp/nba-swift-module-cache \
+  NBAScoreTracker/NBAScoreTracker/Models/Game.swift \
+  NBAScoreTracker/NBAScoreTracker/Services/{NBAClient,NBAService,BoxScoreCache}.swift \
+  NBAScoreTracker/Verification/ReviewRegressions.swift \
+  -o /tmp/nba-review-regressions
+/tmp/nba-review-regressions
+```
+
+These checks cover wake/day rollover during an in-flight request, normal refresh coalescing, player identity through ranking and cache reloads, duplicate/missing IDs, and legacy cache decoding. NBA player IDs are assigned before ranking and persisted in the cache; missing IDs use roster-scoped fallbacks, and old cache records use unique row slots until refreshed.
+
+For refresh changes, verify concurrent refreshes, offline recovery, successful empty schedules, midnight rollover, live-to-final cache transitions, and a slow box score alongside a faster scoreboard. Inspect light/dark appearance, keyboard expansion, refresh/retry, settings, and reopening the menu-bar window.
 
 The September 2026 refactor passed direct Swift compilation and temporary fixture-based regression checks, including HTTP errors, malformed payloads, CDN date mismatch, cache expiry, and preservation of scores/leaders during overlapping work. Offscreen AppKit renders were reviewed in light and dark mode. The local `xcodebuild` installation failed before compilation with a missing `DVTDownloads` symbol in `IDESimulatorFoundation`; direct `swiftc` compilation and linking succeeded. The live NBA CDN returned HTTP 403 in this environment, so real live-game updates still need verification on a working feed. Desktop UI automation also timed out; interactive keyboard/window behavior needs a manual check.
 

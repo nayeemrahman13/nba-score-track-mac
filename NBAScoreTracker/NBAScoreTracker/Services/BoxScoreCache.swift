@@ -94,9 +94,18 @@ struct CachedBoxScore: Codable {
 struct CachedTeamBoxScore: Codable {
     let tricode: String
     let players: [CachedPlayer]
+
+    var leaders: [Player] {
+        players.prefix(3).enumerated().map { index, player in
+            // Old cache files have no ID. Use a unique team-scoped slot until
+            // their next refresh replaces them with NBA player identities.
+            player.toPlayer(fallbackID: "legacy:\(tricode):\(index)")
+        }
+    }
 }
 
 struct CachedPlayer: Codable {
+    var id: String?
     let name: String
     let nameI: String
     let position: String
@@ -113,8 +122,9 @@ struct CachedPlayer: Codable {
     let ftm: Int
     let fta: Int
     
-    func toPlayer() -> Player {
+    func toPlayer(fallbackID: String = UUID().uuidString) -> Player {
         Player(
+            id: id ?? fallbackID,
             name: name,
             nameI: nameI,
             position: position,

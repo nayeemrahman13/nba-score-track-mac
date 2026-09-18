@@ -90,6 +90,7 @@ struct BoxscoreTeam: Codable {
 }
 
 struct BoxscorePlayer: Codable {
+    let personId: Int?
     let name: String?
     let nameI: String?
     let position: String?
@@ -143,7 +144,7 @@ struct Team: Identifiable {
 }
 
 struct Player: Identifiable {
-    var id: String { name }
+    var id: String = UUID().uuidString
     let name: String
     let nameI: String
     let position: String

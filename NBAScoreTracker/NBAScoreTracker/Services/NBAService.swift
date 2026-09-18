@@ -15,6 +15,7 @@ final class NBAService: ObservableObject {
     private let client: any NBAFetching
     private let now: () -> Date
     private var refreshTask: Task<Void, Never>?
+    private var needsRefreshCheck = false
     private var pollingTask: Task<Void, Never>?
     private var leaderTasks: [String: Task<Void, Never>] = [:]
     private var revisions: [String: UUID] = [:]
@@ -58,6 +59,9 @@ final class NBAService: ObservableObject {
     }
 
     private func restartPolling() {
+        // Record this synchronously: the replacement polling task may not run
+        // until an existing request has finished.
+        needsRefreshCheck = true
         pollingTask?.cancel()
         // Do not hold self during the sleep; the loop ends with the service.
         pollingTask = Task { [weak self] in
@@ -72,9 +76,29 @@ final class NBAService: ObservableObject {
 
     func refreshAll(force: Bool = true) async {
         if let refreshTask {
+            needsRefreshCheck = true
             await refreshTask.value
             return
         }
+        let task = Task { [weak self] in
+            var forceNext = force
+            repeat {
+                self?.needsRefreshCheck = false
+                await self?.refreshDates(force: forceNext)
+                // Joined callers request a fresh decision, not duplicate forced
+                // requests. Cleared attempt times and changed dates are honored.
+                forceNext = false
+            } while !Task.isCancelled && self?.needsRefreshCheck == true
+            // Clear ownership inside the shared task, before any waiter resumes.
+            self?.refreshTask = nil
+            self?.isLoading = false
+            self?.loadingDates = []
+        }
+        refreshTask = task
+        await task.value
+    }
+
+    private func refreshDates(force: Bool) async {
         let now = now()
         day = ScoreDate.key(now: now)
         let dates = [0, -1, 1].map { ScoreDate.key(offset: $0, now: now) }
@@ -104,25 +128,18 @@ final class NBAService: ObservableObject {
         isLoading = true
         loadingDates = Set(requested)
         let client = self.client
-        let task = Task { [weak self] in
-            await withTaskGroup(of: (String, Result<[Game], Error>).self) { group in
-                for date in requested {
-                    group.addTask {
-                        do { return (date, .success(try await client.scoreboard(for: date))) }
-                        catch { return (date, .failure(error)) }
-                    }
-                }
-                for await (date, result) in group {
-                    guard !Task.isCancelled else { return }
-                    self?.receive(result, for: date)
+        await withTaskGroup(of: (String, Result<[Game], Error>).self) { group in
+            for date in requested {
+                group.addTask {
+                    do { return (date, .success(try await client.scoreboard(for: date))) }
+                    catch { return (date, .failure(error)) }
                 }
             }
+            for await (date, result) in group {
+                guard !Task.isCancelled else { return }
+                receive(result, for: date)
+            }
         }
-        refreshTask = task
-        await task.value
-        refreshTask = nil
-        isLoading = false
-        loadingDates = []
     }
 
     private var attemptedAt: [String: Date] = [:]
@@ -185,8 +202,8 @@ final class NBAService: ObservableObject {
                        let index = self.games[date]?.firstIndex(where: { $0.id == id }),
                        let requested = candidates.first(where: { $0.id == id }),
                        self.games[date]?[index].status == requested.status {
-                        self.games[date]?[index].homeTeam.leaders = box.homeTeam.players.prefix(3).map { $0.toPlayer() }
-                        self.games[date]?[index].awayTeam.leaders = box.awayTeam.players.prefix(3).map { $0.toPlayer() }
+                        self.games[date]?[index].homeTeam.leaders = box.homeTeam.leaders
+                        self.games[date]?[index].awayTeam.leaders = box.awayTeam.leaders
                     }
                     if let game = iterator.next() { enqueue(game) }
                 }

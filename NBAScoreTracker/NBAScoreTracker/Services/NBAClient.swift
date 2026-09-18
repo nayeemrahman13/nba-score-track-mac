@@ -133,16 +133,26 @@ actor NBAClient: NBAFetching {
     }
 
     private func cachedTeam(tricode: String, players: [BoxscorePlayer]) -> CachedTeamBoxScore {
-        let sorted = players.sorted {
-            let a = $0.statistics, b = $1.statistics
+        var seenIDs = Set<String>()
+        let identified = players.enumerated().map { index, player in
+            let baseID = player.personId.flatMap { $0 > 0 ? "nba:\($0)" : nil }
+                ?? "roster:\(tricode):\(index)"
+            let id = seenIDs.insert(baseID).inserted ? baseID : "\(baseID):duplicate:\(index)"
+            return (id: id, player: player)
+        }
+        // Assign identity before sorting so changes in scoring rank do not
+        // change the identity of players lacking an NBA ID.
+        let sorted = identified.sorted {
+            let a = $0.player.statistics, b = $1.player.statistics
             if (a?.points ?? 0) != (b?.points ?? 0) { return (a?.points ?? 0) > (b?.points ?? 0) }
             if (a?.reboundsTotal ?? 0) != (b?.reboundsTotal ?? 0) { return (a?.reboundsTotal ?? 0) > (b?.reboundsTotal ?? 0) }
             if (a?.assists ?? 0) != (b?.assists ?? 0) { return (a?.assists ?? 0) > (b?.assists ?? 0) }
-            return ($0.name ?? "") < ($1.name ?? "")
+            return ($0.player.name ?? "") < ($1.player.name ?? "")
         }
-        return CachedTeamBoxScore(tricode: tricode, players: sorted.map { p in
+        return CachedTeamBoxScore(tricode: tricode, players: sorted.map { entry in
+            let p = entry.player
             let s = p.statistics
-            return CachedPlayer(name: p.name ?? "Unknown", nameI: p.nameI ?? "", position: p.position ?? "",
+            return CachedPlayer(id: entry.id, name: p.name ?? "Unknown", nameI: p.nameI ?? "", position: p.position ?? "",
                                 points: s?.points ?? 0, rebounds: s?.reboundsTotal ?? 0, assists: s?.assists ?? 0,
                                 steals: s?.steals ?? 0, blocks: s?.blocks ?? 0, minutes: s?.minutes ?? "",
                                 fgm: s?.fieldGoalsMade ?? 0, fga: s?.fieldGoalsAttempted ?? 0,
