@@ -5,7 +5,7 @@ struct ContentView: View {
     @State private var selectedOffset = 0
 
     private var dateKey: String { ScoreDate.key(offset: selectedOffset) }
-    private var selectedLabel: String { selectedOffset == 0 ? "Today" : selectedOffset < 0 ? "Yesterday" : "Tomorrow" }
+    private var selectedLabel: String { selectedOffset == 0 ? "Today" : selectedOffset < 0 ? "Yesterday" : "Upcoming" }
     private var currentGames: [Game] { nbaService.games[dateKey] ?? [] }
 
     var body: some View {
@@ -14,7 +14,7 @@ struct ContentView: View {
             Picker("Game date", selection: $selectedOffset) {
                 Text("Yesterday").tag(-1)
                 Text("Today").tag(0)
-                Text("Tomorrow").tag(1)
+                Text("Upcoming").tag(1)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
