@@ -26,6 +26,10 @@ actor NBAClient: NBAFetching {
     private let session: URLSession
     private let detailSession: URLSession
     private let cache: BoxScoreCache
+    // Debug-only WNBA override (NBA_LEAGUE=10, see AGENTS.md): repoints the whole
+    // live pipeline at the WNBA's CDN for testing before the NBA season starts.
+    // Release builds never read the environment and cannot enter this mode.
+    private let usesWNBAEndpoints: Bool
 
     init(session: URLSession? = nil, cache: BoxScoreCache = .shared) {
         func makeSession() -> URLSession {
@@ -40,13 +44,20 @@ actor NBAClient: NBAFetching {
         self.session = session ?? makeSession()
         self.detailSession = session ?? makeSession()
         self.cache = cache
+        #if DEBUG
+        self.usesWNBAEndpoints = ProcessInfo.processInfo.environment["NBA_LEAGUE"] == "10"
+        #else
+        self.usesWNBAEndpoints = false
+        #endif
     }
 
     func scoreboard(for date: String) async throws -> [Game] {
         if date == ScoreDate.key() {
             do {
                 let response: CDNScoreboardResponse = try await load(
-                    "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json",
+                    usesWNBAEndpoints
+                        ? "https://cdn.wnba.com/static/json/liveData/scoreboard/todaysScoreboard_10.json"
+                        : "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json",
                     using: session
                 )
                 guard response.scoreboard.gameDate == date else { throw NBAError.wrongDate }
@@ -64,7 +75,10 @@ actor NBAClient: NBAFetching {
             }
         }
         let response: ScoreboardResponse = try await load(
-            "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date)&LeagueID=00", using: session
+            usesWNBAEndpoints
+                ? "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date)&LeagueID=10"
+                : "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date)&LeagueID=00",
+            using: session
         )
         return try response.scoreboard.games.map { game in
             try makeGame(id: game.gameId, status: game.gameStatus, text: game.gameStatusText,
@@ -82,7 +96,10 @@ actor NBAClient: NBAFetching {
             return cached
         }
         let response: BoxscoreResponse = try await load(
-            "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_\(game.id).json", using: detailSession
+            usesWNBAEndpoints
+                ? "https://cdn.wnba.com/static/json/liveData/boxscore/boxscore_\(game.id).json"
+                : "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_\(game.id).json",
+            using: detailSession
         )
         guard let box = response.game, box.gameId == game.id,
               let home = box.homeTeam, let away = box.awayTeam,
