@@ -1,53 +1,71 @@
 # NBA Score Tracker (macOS menu bar)
 
-An Electron menubar app (via `menubar`) showing live NBA scores and box-score leaders, styled
-with Tailwind, rendered through Vite. `main.js` polls `stats.nba.com` / `cdn.nba.com` directly
-from the Electron main process and pushes results to the renderer over `ipcMain.handle`.
+A native SwiftUI menu-bar app (macOS 13+) for live NBA scores and box-score player
+leaders. The legacy Electron/npm implementation has been removed — the repo contains
+only the Xcode project and docs.
+
+## Project layout
+
+- `NBAScoreTracker/NBAScoreTracker.xcodeproj` — the Xcode project (macOS 13+).
+- `NBAScoreTracker/NBAScoreTracker/` — app source:
+  - `NBAScoreTrackerApp.swift`, `ContentView.swift` — app entry and menu-bar UI.
+  - `Models/Game.swift` — scoreboard/box-score models.
+  - `Services/` — `NBAClient` (HTTP, decoding, CDN date validation, dated stats
+    fallback), `NBAService` (published UI state, refresh coalescing), `BoxScoreCache`
+    (final-score cache), `LaunchAtLoginManager` (login item).
+  - `Views/` — `GameListView`, `GameRowView`, `LeadersView`, `SettingsView`.
+- `NBAScoreTracker/Verification/ReviewRegressions.swift` — standalone regression
+  executable, not an app test target.
 
 ## Commands
 
-- Install: `npm install`
-- Dev (Vite renderer only, browser preview): `npm run dev`
-- Run as the actual menubar app: `npm start` (launches Electron against `main.js`)
-- Build renderer assets: `npm run build`
+Build the app:
+
+```sh
+xcodebuild -project NBAScoreTracker/NBAScoreTracker.xcodeproj \
+  -scheme NBAScoreTracker -configuration Debug build
+```
+
+(or open the project in Xcode and run the `NBAScoreTracker` scheme.)
+
+Focused check — build and run the standalone regression executable:
+
+```sh
+xcrun swiftc -parse-as-library -module-cache-path /tmp/nba-swift-module-cache \
+  NBAScoreTracker/NBAScoreTracker/Models/Game.swift \
+  NBAScoreTracker/NBAScoreTracker/Services/{NBAClient,NBAService,BoxScoreCache}.swift \
+  NBAScoreTracker/Verification/ReviewRegressions.swift \
+  -o /tmp/nba-review-regressions
+/tmp/nba-review-regressions
+```
+
+These checks cover wake/day rollover during an in-flight request, refresh coalescing,
+player identity through ranking and cache reloads, duplicate/missing IDs, and legacy
+cache decoding.
 
 There is no test suite and no lint script configured. Don't invent either speculatively.
 
-## Architecture
+## Refresh, polling, and caching
 
-- `main.js` — Electron main process: creates the `menubar` window, fetches scores/box-score
-  leaders from NBA's stats and CDN endpoints, exposes `fetch-nba-scores` and `quit-app` over IPC.
-- `src/renderer.js`, `src/style.css` — the renderer UI, Tailwind-styled.
-- `src/python/fetch_scores.py` — **dead code.** Same score-fetching logic as `main.js`, in
-  Python via the `nba_api` package. Nothing in `main.js` or `package.json` invokes it. It was
-  superseded by the JS port and is not part of the running app.
+`NBAClient` owns HTTP and decoding; failures throw and are never converted to empty
+schedules. `NBAService` coalesces overlapping refreshes, publishes dates independently,
+and on failure retains the last successful games; box-score enrichment cannot overwrite
+scoreboard scores or apply live details after a game becomes final. While visible,
+polling waits 15 seconds between completed refreshes with live games, or 60 seconds
+otherwise; hidden windows use 5/15-minute intervals; unselected non-live dates refresh
+at most every five minutes; each failed date backs off independently from 30 seconds
+to five minutes. Manual refresh bypasses freshness/backoff and joins any request
+already running. `BoxScoreCache` accepts only confirmed final results whose totals
+match the scoreboard and expires entries after six hours. See README for the full
+behavior contract.
 
-## Gotchas
+## Gotchas and boundaries
 
-- **`webPreferences` sets `nodeIntegration: true, contextIsolation: false`.** That gives the
-  renderer full Node access with no isolation from a remote page — normally a serious Electron
-  anti-pattern. It's lower-risk here because the renderer only ever loads local `dist/` content
-  in production, not third-party pages. Don't add `<webview>`, an external URL load, or any
-  remote content to the renderer without revisiting this first.
-- **NBA's endpoints are unofficial and undocumented.** The hardcoded `HEADERS` (User-Agent,
-  Origin, Referer) exist to look like a browser request; expect them to need updating if NBA
-  changes what it accepts. Both `main.js` and the dead `fetch_scores.py` duplicate this — if you
-  fix one, the other is still wrong, but only `main.js` matters at runtime.
-- **`venv/` exists at the repo root** for the unused Python script. It's not referenced by any
-  npm script — don't assume `npm start` needs it activated.
-
-## Boundaries
-
-**Always**
-- Manually launch `npm start` and confirm today's games render after touching `main.js`'s
-  fetch or IPC logic — there's no automated coverage to catch a broken response shape.
-
-**Ask first**
-- Re-enabling `contextIsolation` / `nodeIntegration: false` — worth doing, but it's a real
-  refactor of how the renderer talks to `main.js` (needs a preload script and `contextBridge`),
-  not a flag flip.
-
-**Never**
-- Delete `src/python/fetch_scores.py` silently as part of an unrelated change — flag it and let
-  it be a deliberate removal, since removing dead code is still a diff someone should see coming.
-- Add a remote/external URL as the `menubar` window's `index`.
+- **NBA's endpoints are unofficial and undocumented.** They can change shape or what
+  they accept (headers, date handling) without notice — verify against live data when
+  touching `NBAClient`.
+- **No test or lint suite exists.** The regression executable above is the focused
+  check; don't invent a test or lint setup speculatively.
+- For refresh changes, run the regression executable and manually verify concurrent
+  refreshes, offline recovery, midnight rollover, and live-to-final cache transitions
+  (README's Verification section has the full checklist).
