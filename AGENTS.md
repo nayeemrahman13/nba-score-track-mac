@@ -59,6 +59,13 @@ already running. `BoxScoreCache` accepts only confirmed final results whose tota
 match the scoreboard and expires entries after six hours. See README for the full
 behavior contract.
 
+## Debug league override
+
+Launching a **debug** build with `NBA_LEAGUE=10` points the whole live pipeline at the WNBA:
+scoreboard and box scores come from `cdn.wnba.com` (`todaysScoreboard_10.json`,
+`boxscore_<id>.json`) and the dated stats fallback uses `LeagueID=10`. WNBA live data only
+exists there — `cdn.nba.com`'s `_10` object is stale, frozen at a 2020 Finals game.
+
 ## Gotchas and boundaries
 
 - **NBA's endpoints are unofficial and undocumented.** They can change shape or what
