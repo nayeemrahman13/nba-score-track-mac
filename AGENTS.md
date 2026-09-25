@@ -40,8 +40,9 @@ xcrun swiftc -parse-as-library -module-cache-path /tmp/nba-swift-module-cache \
 ```
 
 These checks cover wake/day rollover during an in-flight request, refresh coalescing,
-player identity through ranking and cache reloads, duplicate/missing IDs, and legacy
-cache decoding.
+player identity through ranking and cache reloads, duplicate/missing IDs, legacy
+cache decoding, and tolerant scoreboard decoding that drops malformed game rows
+while keeping their siblings.
 
 There is no test suite and no lint script configured. Don't invent either speculatively.
 
@@ -51,8 +52,11 @@ There is no test suite and no lint script configured. Don't invent either specul
 schedules. `NBAService` coalesces overlapping refreshes, publishes dates independently,
 and on failure retains the last successful games; box-score enrichment cannot overwrite
 scoreboard scores or apply live details after a game becomes final. While visible,
-polling waits 15 seconds between completed refreshes with live games, or 60 seconds
-otherwise; hidden windows use 5/15-minute intervals; unselected non-live dates refresh
+polling waits 15 seconds between completed refreshes with live games (live takes
+precedence over the error-state interval), 60 seconds with no live games or errors,
+or 30 seconds while any date is in the error state and none are live — the loop's
+cadence, not the failing date's retry rate, which stays on its own backoff; hidden
+windows use 5/15-minute intervals; unselected non-live dates refresh
 at most every five minutes; each failed date backs off independently from 30 seconds
 to five minutes. Manual refresh bypasses freshness/backoff and joins any request
 already running. `BoxScoreCache` accepts only confirmed final results whose totals
