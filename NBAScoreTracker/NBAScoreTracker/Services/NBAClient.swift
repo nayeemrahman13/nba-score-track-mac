@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 protocol NBAFetching {
     func scoreboard(for date: String) async throws -> [Game]
@@ -17,6 +18,41 @@ enum NBAError: LocalizedError {
         case .invalidResponse: return "NBA returned incomplete data. We'll retry automatically."
         case .wrongDate: return "The live scoreboard belongs to another date."
         }
+    }
+}
+
+// Both scoreboard feeds decode into distinct row types with the same shape; the
+// shared validation in NBAClient.decodeGames below reads rows through this
+// protocol so the CDN and stats paths cannot drift apart.
+protocol ScoreboardGame {
+    var gameId: String { get }
+    var gameStatus: Int { get }
+    var gameStatusText: String { get }
+    var period: Int { get }
+    var gameTimeUTC: String? { get }
+    var homeTricode: String? { get }
+    var homeScore: Int? { get }
+    var awayTricode: String? { get }
+    var awayScore: Int? { get }
+    var nationalBroadcaster: String? { get }
+}
+
+extension CDNGame: ScoreboardGame {
+    var homeTricode: String? { homeTeam.teamTricode }
+    var homeScore: Int? { homeTeam.score }
+    var awayTricode: String? { awayTeam.teamTricode }
+    var awayScore: Int? { awayTeam.score }
+    var nationalBroadcaster: String? { broadcasters?.nationalTvBroadcasters?.first?.broadcasterDisplay }
+}
+
+extension APIGame: ScoreboardGame {
+    var homeTricode: String? { homeTeam.teamTricode }
+    var homeScore: Int? { homeTeam.score }
+    var awayTricode: String? { awayTeam.teamTricode }
+    var awayScore: Int? { awayTeam.score }
+    var nationalBroadcaster: String? {
+        broadcasters?.nationalBroadcasters?.first?.broadcastDisplay
+            ?? broadcasters?.nationalOttBroadcasters?.first?.broadcastDisplay
     }
 }
 
@@ -62,13 +98,7 @@ actor NBAClient: NBAFetching {
                 )
                 guard response.scoreboard.gameDate == date else { throw NBAError.wrongDate }
                 // Empty is a successful response, not a reason to hit another API.
-                return try response.scoreboard.games.map { game in
-                    try makeGame(id: game.gameId, status: game.gameStatus, text: game.gameStatusText,
-                                 period: game.period, time: game.gameTimeUTC,
-                                 home: game.homeTeam.teamTricode, homeScore: game.homeTeam.score,
-                                 away: game.awayTeam.teamTricode, awayScore: game.awayTeam.score,
-                                 broadcaster: game.broadcasters?.nationalTvBroadcasters?.first?.broadcasterDisplay)
-                }
+                return try Self.decodeGames(response.scoreboard.games)
             } catch {
                 try Task.checkCancellation()
                 // The dated endpoint is also needed around the NBA's day rollover.
@@ -80,14 +110,7 @@ actor NBAClient: NBAFetching {
                 : "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date)&LeagueID=00",
             using: session
         )
-        return try response.scoreboard.games.map { game in
-            try makeGame(id: game.gameId, status: game.gameStatus, text: game.gameStatusText,
-                         period: game.period, time: game.gameTimeUTC,
-                         home: game.homeTeam.teamTricode, homeScore: game.homeTeam.score,
-                         away: game.awayTeam.teamTricode, awayScore: game.awayTeam.score,
-                         broadcaster: game.broadcasters?.nationalBroadcasters?.first?.broadcastDisplay
-                            ?? game.broadcasters?.nationalOttBroadcasters?.first?.broadcastDisplay)
-        }
+        return try Self.decodeGames(response.scoreboard.games)
     }
 
     func leaders(for game: Game) async throws -> CachedBoxScore {
@@ -135,18 +158,39 @@ actor NBAClient: NBAFetching {
         // Retrying belongs to the polling coordinator, not nested request loops.
     }
 
-    private func makeGame(id: String, status: Int, text: String, period: Int, time: String?,
-                          home: String?, homeScore: Int?, away: String?, awayScore: Int?,
-                          broadcaster: String?) throws -> Game {
-        guard !id.isEmpty, id.allSatisfy(\.isNumber), let state = Game.GameStatus(rawValue: status),
-              let home, let away, !home.isEmpty, !away.isEmpty else { throw NBAError.invalidResponse }
-        if state != .upcoming && (homeScore == nil || awayScore == nil) { throw NBAError.invalidResponse }
-        let channel = broadcaster?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Game(id: id, status: state, statusText: text,
+    // Row validation shared by both scoreboard paths. Per-row problems are data and
+    // drop only their row; structural problems are failures. A half-broken feed must
+    // not read as an empty day, so rows present with zero valid games still throw —
+    // only a genuinely empty array returns an empty schedule.
+    static func decodeGames<Row: ScoreboardGame>(_ rows: [Row], log: Logger = Logger()) throws -> [Game] {
+        guard !rows.isEmpty else { return [] }
+        var valid: [Game] = []
+        for row in rows {
+            do {
+                valid.append(try makeGame(from: row))
+            } catch NBAError.invalidResponse {
+                log.warning("Dropped malformed game row (id=\(row.gameId, privacy: .public)).")
+            } catch {
+                // makeGame throws nothing else today; unknown failures stay structural.
+                throw error
+            }
+        }
+        guard !valid.isEmpty else { throw NBAError.invalidResponse }
+        return valid
+    }
+
+    private static func makeGame(from row: some ScoreboardGame) throws -> Game {
+        guard !row.gameId.isEmpty, row.gameId.allSatisfy(\.isNumber),
+              let state = Game.GameStatus(rawValue: row.gameStatus),
+              let home = row.homeTricode, let away = row.awayTricode,
+              !home.isEmpty, !away.isEmpty else { throw NBAError.invalidResponse }
+        if state != .upcoming && (row.homeScore == nil || row.awayScore == nil) { throw NBAError.invalidResponse }
+        let channel = row.nationalBroadcaster?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Game(id: row.gameId, status: state, statusText: row.gameStatusText,
                     broadcaster: channel?.isEmpty == false ? (channel!.uppercased().contains("AMAZON") ? "Prime Video" : channel!) : "",
-                    homeTeam: Team(tricode: home, score: homeScore ?? 0, leaders: []),
-                    awayTeam: Team(tricode: away, score: awayScore ?? 0, leaders: []),
-                    period: period, gameTimeUTC: time ?? "")
+                    homeTeam: Team(tricode: home, score: row.homeScore ?? 0, leaders: []),
+                    awayTeam: Team(tricode: away, score: row.awayScore ?? 0, leaders: []),
+                    period: row.period, gameTimeUTC: row.gameTimeUTC ?? "")
     }
 
     private func cachedTeam(tricode: String, players: [BoxscorePlayer]) -> CachedTeamBoxScore {
