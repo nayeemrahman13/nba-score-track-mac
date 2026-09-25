@@ -189,5 +189,35 @@ private struct ReviewRegressions {
         let emptyAPI = try NBAClient.decodeGames([APIGame]())
         precondition(emptyAPI.isEmpty)
         print("PASS: an empty games array stays a successful empty schedule")
+
+        // Fetch-path coverage: decodeGames must be reachable through the real
+        // scoreboard routing, not only called directly. FixtureProtocol serves one
+        // static body to every URL, so each phase installs the body it needs; a
+        // gameDate that does not match the requested date forces the CDN request
+        // into the dated-stats fallback, which re-decodes the same body.
+        let today = ScoreDate.key()
+        FixtureProtocol.body = """
+        {"scoreboard": {"gameDate": "\(today)", "games": [
+          {"gameId": "0022600010", "gameStatus": 2, "gameStatusText": "Q3", "period": 3,
+           "homeTeam": {"teamTricode": "OKC", "score": 71}, "awayTeam": {"teamTricode": "DEN", "score": 68}},
+          {"gameId": "0022600011", "gameStatus": 2, "gameStatusText": "Q1", "period": 1,
+           "homeTeam": {"teamTricode": "SAC", "score": null}, "awayTeam": {"teamTricode": "POR", "score": null}}
+        ]}}
+        """
+        let cdnFetched = try await api.scoreboard(for: today)
+        precondition(cdnFetched.map(\.id) == ["0022600010"], "The CDN path must drop malformed rows through the real fetch")
+        print("PASS: the CDN fetch path drops malformed rows while their siblings survive")
+
+        FixtureProtocol.body = """
+        {"scoreboard": {"gameDate": "2000-01-01", "games": [
+          {"gameId": "0022600012", "gameStatus": 3, "gameStatusText": "Final", "period": 4,
+           "homeTeam": {"teamTricode": "MIL", "score": 121}, "awayTeam": {"teamTricode": "CHI", "score": 113}},
+          {"gameId": "0022600013", "gameStatus": 9, "gameStatusText": "??", "period": 0,
+           "homeTeam": {"teamTricode": "UTA", "score": null}, "awayTeam": {"teamTricode": "NOP", "score": null}}
+        ]}}
+        """
+        let fallbackFetched = try await api.scoreboard(for: today)
+        precondition(fallbackFetched.map(\.id) == ["0022600012"], "The dated-stats fallback must drop malformed rows too")
+        print("PASS: the dated-stats fallback path drops malformed rows while their siblings survive")
     }
 }
