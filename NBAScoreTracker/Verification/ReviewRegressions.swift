@@ -12,14 +12,14 @@ private actor GatedNBA: NBAFetching {
         if blocked {
             await withCheckedContinuation { continuation in
                 gates.append(continuation)
-                if gates.count == 3 { started?.resume(); started = nil }
+                if gates.count == ScoreDate.trackedOffsets.count { started?.resume(); started = nil }
             }
         }
         return []
     }
     func leaders(for game: Game) async throws -> CachedBoxScore { throw NBAError.invalidResponse }
     func waitForFirstBatch() async {
-        if gates.count == 3 { return }
+        if gates.count == ScoreDate.trackedOffsets.count { return }
         await withCheckedContinuation { started = $0 }
     }
     func release() {
@@ -27,6 +27,25 @@ private actor GatedNBA: NBAFetching {
         gates.forEach { $0.resume() }
         gates.removeAll()
     }
+}
+
+private actor ScheduleNBA: NBAFetching {
+    private var failedDate: String?
+    private(set) var requested: [String] = []
+    let emptyDate: String
+
+    init(emptyDate: String) { self.emptyDate = emptyDate }
+    func fail(on date: String?) { failedDate = date }
+    func scoreboard(for date: String) async throws -> [Game] {
+        requested.append(date)
+        if date == failedDate { throw URLError(.notConnectedToInternet) }
+        if date == emptyDate { return [] }
+        return [Game(id: date, status: .upcoming, statusText: "Scheduled", broadcaster: "",
+                     homeTeam: Team(tricode: "NYK", score: 0, leaders: []),
+                     awayTeam: Team(tricode: "BOS", score: 0, leaders: []), period: 0,
+                     gameTimeUTC: "\(date)T23:00:00Z")]
+    }
+    func leaders(for game: Game) async throws -> CachedBoxScore { throw NBAError.invalidResponse }
 }
 
 private final class FixtureProtocol: URLProtocol {
@@ -58,8 +77,8 @@ private struct ReviewRegressions {
             await client.release()
             await first.value
             let dates = await client.dates
-            precondition(dates.count == 6, "Lifecycle event was lost or refreshes duplicated")
-            precondition(Set(dates.suffix(3)) == Set([-1, 0, 1].map { ScoreDate.key(offset: $0, now: clock) }))
+            precondition(dates.count == ScoreDate.trackedOffsets.count * 2, "Lifecycle event was lost or refreshes duplicated")
+            precondition(Set(dates.suffix(ScoreDate.trackedOffsets.count)) == Set(ScoreDate.trackedOffsets.map { ScoreDate.key(offset: $0, now: clock) }))
             precondition(service.day == ScoreDate.key(now: clock))
             precondition(service.games[ScoreDate.key(offset: 1, now: clock)] != nil)
             precondition(!service.isLoading)
@@ -75,8 +94,28 @@ private struct ReviewRegressions {
         await first.value
         await joined.value
         let dates = await client.dates
-        precondition(dates.count == 3, "Ordinary joined refresh bypassed freshness")
+        precondition(dates.count == ScoreDate.trackedOffsets.count, "Ordinary joined refresh bypassed freshness")
         print("PASS: ordinary concurrent refreshes still coalesce")
+
+        // Explicit calendar dates exercise the three-day horizon across a year
+        // boundary, including an empty middle day and a partial network failure.
+        let reference = ScoreDate.date(for: "2026-12-30")!
+        let scheduleClient = ScheduleNBA(emptyDate: "2027-01-01")
+        let schedule = NBAService(client: scheduleClient, now: { reference })
+        await schedule.refreshAll()
+        precondition(schedule.upcomingDates == ["2026-12-31", "2027-01-01", "2027-01-02"])
+        let requested = await scheduleClient.requested
+        precondition(Set(requested) == Set(["2026-12-29", "2026-12-30", "2026-12-31", "2027-01-01", "2027-01-02"]))
+        precondition(schedule.games["2027-01-01"]?.isEmpty == true)
+        precondition(schedule.games["2027-01-02"]?.count == 1)
+        let previousUpdate = schedule.updatedAt["2027-01-02"]
+        await scheduleClient.fail(on: "2027-01-02")
+        await schedule.refreshAll()
+        precondition(schedule.games["2027-01-02"]?.count == 1)
+        precondition(schedule.updatedAt["2027-01-02"] == previousUpdate)
+        precondition(schedule.errors.count == 1 && schedule.errors["2027-01-02"] != nil)
+        precondition(schedule.games["2026-12-31"]?.count == 1 && schedule.games["2027-01-01"]?.isEmpty == true)
+        print("PASS: three-day Upcoming horizon crosses year boundaries and preserves each day's empty/error/cached state")
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("nba-review-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }

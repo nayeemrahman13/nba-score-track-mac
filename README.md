@@ -21,6 +21,8 @@ xcodebuild -project NBAScoreTracker/NBAScoreTracker.xcodeproj \
 
 Settings opens in a retained, independent window rather than a sheet on the transient menu-bar panel, so login-item approval and focus changes cannot dismiss it. Login-item status is refreshed when the app becomes active again.
 
+Upcoming shows the next three calendar days starting tomorrow, grouped under date headings and ordered by tipoff within each day. All three schedules are prefetched; each keeps its own loading, empty, error, and retained-data state. The footer reports partial loading until all three dates have succeeded, and uses the oldest update time for the group. Yesterday and Today remain single-day views.
+
 The UI distinguishes initial loading, a successful empty schedule, initial failure, and failure with retained scores. Refresh is available through the toolbar or ⌘R. Game rows are native keyboard-accessible buttons, score updates do not animate, and press feedback respects Reduce Motion. Tipoff times use the local timezone. Missing broadcast information is omitted rather than guessed.
 
 ## Verification
@@ -36,7 +38,7 @@ xcrun swiftc -parse-as-library -module-cache-path /tmp/nba-swift-module-cache \
 /tmp/nba-review-regressions
 ```
 
-These checks cover wake/day rollover during an in-flight request, normal refresh coalescing, player identity through ranking and cache reloads, duplicate/missing IDs, and legacy cache decoding. NBA player IDs are assigned before ranking and persisted in the cache; missing IDs use roster-scoped fallbacks, and old cache records use unique row slots until refreshed.
+These checks cover wake/day rollover during an in-flight request, normal refresh coalescing, player identity through ranking and cache reloads, duplicate/missing IDs, legacy cache decoding, and the three-day schedule across year boundaries with partial failures. NBA player IDs are assigned before ranking and persisted in the cache; missing IDs use roster-scoped fallbacks, and old cache records use unique row slots until refreshed.
 
 For refresh changes, verify concurrent refreshes, offline recovery, successful empty schedules, midnight rollover, live-to-final cache transitions, and a slow box score alongside a faster scoreboard. Inspect light/dark appearance, keyboard expansion, refresh/retry, settings, and reopening the menu-bar window.
 
