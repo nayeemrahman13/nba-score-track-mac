@@ -6,6 +6,7 @@ struct ContentView: View {
 
     private var dateKey: String { ScoreDate.key(offset: selectedOffset) }
     private var selectedLabel: String { selectedOffset == 0 ? "Today" : selectedOffset < 0 ? "Yesterday" : "Upcoming" }
+    private var visibleDateKeys: [String] { selectedOffset == 1 ? nbaService.upcomingDates : [dateKey] }
     private var currentGames: [Game] { nbaService.games[dateKey] ?? [] }
 
     var body: some View {
@@ -24,7 +25,9 @@ struct ContentView: View {
 
             Divider()
             ScrollView {
-                if nbaService.games[dateKey] == nil {
+                if selectedOffset == 1 {
+                    UpcomingGamesView(dates: nbaService.upcomingDates)
+                } else if nbaService.games[dateKey] == nil {
                     if let error = nbaService.errors[dateKey] {
                         stateView(icon: "wifi.exclamationmark", title: "Scores unavailable", detail: error, retry: true)
                     } else {
@@ -62,9 +65,15 @@ struct ContentView: View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("NBA Tracker").font(.system(size: 15, weight: .semibold))
-                Text(Calendar.current.date(byAdding: .day, value: selectedOffset, to: Date()) ?? Date(), format: .dateTime.weekday(.wide).month(.abbreviated).day())
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Group {
+                    if selectedOffset == 1 {
+                        Text("Next 3 days · starting tomorrow")
+                    } else {
+                        Text(Calendar.current.date(byAdding: .day, value: selectedOffset, to: Date()) ?? Date(), format: .dateTime.weekday(.wide).month(.abbreviated).day())
+                    }
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
             }
             Spacer()
             Button {
@@ -94,15 +103,17 @@ struct ContentView: View {
     private var footer: some View {
         HStack {
             TimelineView(.periodic(from: .now, by: 15)) { context in
-                if let updated = nbaService.updatedAt[dateKey] {
-                    let stale = nbaService.errors[dateKey] != nil || context.date.timeIntervalSince(updated) > 120
+                let updates = visibleDateKeys.compactMap { nbaService.updatedAt[$0] }
+                if let updated = updates.min() {
+                    let partial = updates.count < visibleDateKeys.count
+                    let stale = partial || visibleDateKeys.contains { nbaService.errors[$0] != nil } || context.date.timeIntervalSince(updated) > 120
                     HStack(spacing: 5) {
                         Circle().fill(stale ? Color.orange : Color.secondary).frame(width: 5, height: 5)
-                        Text("Updated \(updated.formatted(date: .omitted, time: .shortened))")
+                        Text(partial ? "Schedule partially loaded" : "Updated \(updated.formatted(date: .omitted, time: .shortened))")
                     }
                     .help(stale ? "Scores may be out of date. Refresh to try again." : "Scores refresh automatically while this window is open.")
                 } else {
-                    Text(nbaService.loadingDates.contains(dateKey) ? "Connecting to NBA…" : "Waiting for scores")
+                    Text(!nbaService.loadingDates.isDisjoint(with: visibleDateKeys) ? "Connecting to NBA…" : "Waiting for scores")
                 }
             }
             .font(.system(size: 11))

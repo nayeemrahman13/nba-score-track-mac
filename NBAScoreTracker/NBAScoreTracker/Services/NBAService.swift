@@ -23,6 +23,11 @@ final class NBAService: ObservableObject {
     private var isPopoverVisible = false
     private var selectedOffset = 0
 
+    var upcomingDates: [String] {
+        let reference = now()
+        return ScoreDate.upcomingOffsets.map { ScoreDate.key(offset: $0, now: reference) }
+    }
+
     var hasLiveGames: Bool { games.values.joined().contains { $0.status == .live } }
     var pollingInterval: TimeInterval {
         if isPopoverVisible { return hasLiveGames ? 15 : errors.isEmpty ? 60 : 30 }
@@ -101,8 +106,9 @@ final class NBAService: ObservableObject {
     private func refreshDates(force: Bool) async {
         let now = now()
         day = ScoreDate.key(now: now)
-        let dates = [0, -1, 1].map { ScoreDate.key(offset: $0, now: now) }
-        let selectedDate = ScoreDate.key(offset: selectedOffset, now: now)
+        let dates = ScoreDate.trackedOffsets.map { ScoreDate.key(offset: $0, now: now) }
+        let selectedDates = Set((selectedOffset == 1 ? ScoreDate.upcomingOffsets : [selectedOffset])
+            .map { ScoreDate.key(offset: $0, now: now) })
         games = games.filter { dates.contains($0.key) }
         updatedAt = updatedAt.filter { dates.contains($0.key) }
         errors = errors.filter { dates.contains($0.key) }
@@ -113,7 +119,7 @@ final class NBAService: ObservableObject {
         }
         let requested = dates.filter { date in
             if force { return true }
-            let normalInterval: TimeInterval = date == day || date == selectedDate || games[date]?.contains(where: { $0.status == .live }) == true
+            let normalInterval: TimeInterval = date == day || selectedDates.contains(date) || games[date]?.contains(where: { $0.status == .live }) == true
                 ? pollingInterval : 300
             let count = failureCounts[date] ?? 0
             let interval = count > 0 ? min(300, 30 * pow(2, Double(min(count - 1, 4)))) : normalInterval

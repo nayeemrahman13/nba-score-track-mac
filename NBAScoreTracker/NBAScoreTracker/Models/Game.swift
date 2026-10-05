@@ -156,6 +156,18 @@ struct Player: Identifiable {
 // A single date convention shared by requests and tabs. CDN dates are checked
 // before use because its "today" may differ from the user's local calendar day.
 enum ScoreDate {
+    static let upcomingOffsets = [1, 2, 3]
+    static let trackedOffsets = [0, -1] + upcomingOffsets
+
+    static func date(for key: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = Calendar.current.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: key)
+    }
+
     static func key(offset: Int = 0, now: Date = Date()) -> String {
         let calendar = Calendar.current
         let date = calendar.date(byAdding: .day, value: offset, to: now) ?? now
