@@ -122,6 +122,8 @@ struct Game: Identifiable {
     var awayTeam: Team
     let period: Int
     let gameTimeUTC: String
+
+    var startDate: Date? { ScoreDate.tipoffDate(from: gameTimeUTC) }
     
     enum GameStatus: Int {
         case upcoming = 1
@@ -153,29 +155,72 @@ struct Player: Identifiable {
     let assists: Int
 }
 
-// A single date convention shared by requests and tabs. CDN dates are checked
-// before use because its "today" may differ from the user's local calendar day.
+// Tabs use local calendar days. Transport dates belong to the league's Eastern
+// calendar and are converted separately before games are grouped by tipoff.
 enum ScoreDate {
     static let upcomingOffsets = [1, 2, 3]
     static let trackedOffsets = [0, -1] + upcomingOffsets
 
-    static func date(for key: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = Calendar.current.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: key)
+    private static func calendar(in timeZone: TimeZone) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        return calendar
     }
 
-    static func key(offset: Int = 0, now: Date = Date()) -> String {
-        let calendar = Calendar.current
-        let date = calendar.date(byAdding: .day, value: offset, to: now) ?? now
+    private static func formatter(in timeZone: TimeZone) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = calendar.timeZone
+        formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        return formatter
+    }
+
+    static func date(for key: String, timeZone: TimeZone = Calendar.current.timeZone) -> Date? {
+        let formatter = formatter(in: timeZone)
+        guard let date = formatter.date(from: key), formatter.string(from: date) == key else { return nil }
+        return date
+    }
+
+    static func interval(for key: String, timeZone: TimeZone = Calendar.current.timeZone) -> DateInterval? {
+        guard let date = date(for: key, timeZone: timeZone) else { return nil }
+        return calendar(in: timeZone).dateInterval(of: .day, for: date)
+    }
+
+    static func key(offset: Int = 0, now: Date = Date(), timeZone: TimeZone = Calendar.current.timeZone) -> String {
+        let calendar = calendar(in: timeZone)
+        let date = calendar.date(byAdding: .day, value: offset, to: now) ?? now
+        return formatter(in: timeZone).string(from: date)
+    }
+
+    static func tipoffDate(from value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions.insert(.withFractionalSeconds)
+        return formatter.date(from: value)
+    }
+}
+
+struct LeagueDate: Hashable {
+    let key: String
+    private static var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        return calendar
+    }
+
+    init(containing date: Date) {
+        key = ScoreDate.key(now: date, timeZone: Self.calendar.timeZone)
+    }
+
+    static func covering(_ interval: DateInterval) -> [LeagueDate] {
+        let calendar = Self.calendar
+        var day = calendar.startOfDay(for: interval.start)
+        var dates: [LeagueDate] = []
+        while day < interval.end {
+            dates.append(LeagueDate(containing: day))
+            day = calendar.date(byAdding: .day, value: 1, to: day)!
+        }
+        return dates
     }
 }

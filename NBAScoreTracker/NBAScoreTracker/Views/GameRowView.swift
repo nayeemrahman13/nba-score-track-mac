@@ -118,17 +118,11 @@ struct GameRowView: View {
     }
     
     private var localStartTime: String {
-        let formatter = ISO8601DateFormatter()
-        var date = formatter.date(from: game.gameTimeUTC)
-        if date == nil {
-            formatter.formatOptions.insert(.withFractionalSeconds)
-            date = formatter.date(from: game.gameTimeUTC)
-        }
         // Preserve special NBA statuses such as postponed, rather than showing
         // the original tipoff time as though the game were still scheduled.
         let status = game.statusText.lowercased()
         if status.contains("postpon") || status.contains("cancel") || status.contains("tbd") { return game.statusText }
-        return date?.formatted(date: .omitted, time: .shortened) ?? game.statusText
+        return game.startDate?.formatted(date: .omitted, time: .shortened) ?? game.statusText
     }
 
     private var broadcasterBadge: some View {
