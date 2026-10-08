@@ -49,7 +49,12 @@ There is no test suite and no lint script configured. Don't invent either specul
 ## Refresh, polling, and caching
 
 `NBAClient` owns HTTP and decoding; failures throw and are never converted to empty
-schedules. `NBAService` coalesces overlapping refreshes, publishes dates independently,
+schedules. Its requested dates are local Gregorian calendar days. It fetches the
+overlapping Eastern NBA schedules, validates the CDN against the league date, and
+groups games by UTC tipoff within the local day's midnight boundaries. Adjacent
+local days share in-flight league requests; a local day updates only when all its
+overlapping schedules succeed. Rows without a usable UTC tipoff are malformed.
+`NBAService` coalesces overlapping refreshes, publishes dates independently,
 and on failure retains the last successful games; box-score enrichment cannot overwrite
 scoreboard scores or apply live details after a game becomes final. While visible,
 polling waits 15 seconds between completed refreshes with live games (live takes

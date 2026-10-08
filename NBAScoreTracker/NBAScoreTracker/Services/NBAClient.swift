@@ -2,6 +2,7 @@ import Foundation
 import os
 
 protocol NBAFetching {
+    // The date is a local calendar day, not an NBA schedule date.
     func scoreboard(for date: String) async throws -> [Game]
     func leaders(for game: Game) async throws -> CachedBoxScore
 }
@@ -62,12 +63,14 @@ actor NBAClient: NBAFetching {
     private let session: URLSession
     private let detailSession: URLSession
     private let cache: BoxScoreCache
+    private let now: () -> Date
+    private var scoreboardTasks: [LeagueDate: Task<[Game], Error>] = [:]
     // Debug-only WNBA override (NBA_LEAGUE=10, see AGENTS.md): repoints the whole
     // live pipeline at the WNBA's CDN for testing before the NBA season starts.
     // Release builds never read the environment and cannot enter this mode.
     private let usesWNBAEndpoints: Bool
 
-    init(session: URLSession? = nil, cache: BoxScoreCache = .shared) {
+    init(session: URLSession? = nil, cache: BoxScoreCache = .shared, now: @escaping () -> Date = Date.init) {
         func makeSession() -> URLSession {
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = 8
@@ -80,6 +83,7 @@ actor NBAClient: NBAFetching {
         self.session = session ?? makeSession()
         self.detailSession = session ?? makeSession()
         self.cache = cache
+        self.now = now
         #if DEBUG
         self.usesWNBAEndpoints = ProcessInfo.processInfo.environment["NBA_LEAGUE"] == "10"
         #else
@@ -88,7 +92,43 @@ actor NBAClient: NBAFetching {
     }
 
     func scoreboard(for date: String) async throws -> [Game] {
-        if date == ScoreDate.key() {
+        guard let interval = ScoreDate.interval(for: date) else { throw NBAError.invalidResponse }
+        let games = try await withThrowingTaskGroup(of: [Game].self) { group in
+            for leagueDate in LeagueDate.covering(interval) {
+                group.addTask { try await self.leagueScoreboard(for: leagueDate) }
+            }
+            var games: [Game] = []
+            for try await fetched in group { games.append(contentsOf: fetched) }
+            return games
+        }
+        return games.compactMap { game -> (Game, Date)? in
+            guard let start = game.startDate, start >= interval.start, start < interval.end else { return nil }
+            return (game, start)
+        }.sorted {
+            if $0.1 != $1.1 { return $0.1 < $1.1 }
+            return $0.0.id < $1.0.id
+        }.map { $0.0 }
+    }
+
+    private func leagueScoreboard(for date: LeagueDate) async throws -> [Game] {
+        try Task.checkCancellation()
+        let task: Task<[Game], Error>
+        if let existing = scoreboardTasks[date] {
+            task = existing
+        } else {
+            task = Task {
+                defer { scoreboardTasks.removeValue(forKey: date) }
+                return try await loadLeagueScoreboard(for: date)
+            }
+            scoreboardTasks[date] = task
+        }
+        let games = try await task.value
+        try Task.checkCancellation()
+        return games
+    }
+
+    private func loadLeagueScoreboard(for date: LeagueDate) async throws -> [Game] {
+        if date == LeagueDate(containing: now()) {
             do {
                 let response: CDNScoreboardResponse = try await load(
                     usesWNBAEndpoints
@@ -96,7 +136,7 @@ actor NBAClient: NBAFetching {
                         : "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json",
                     using: session
                 )
-                guard response.scoreboard.gameDate == date else { throw NBAError.wrongDate }
+                guard response.scoreboard.gameDate == date.key else { throw NBAError.wrongDate }
                 // Empty is a successful response, not a reason to hit another API.
                 return try Self.decodeGames(response.scoreboard.games)
             } catch {
@@ -106,8 +146,8 @@ actor NBAClient: NBAFetching {
         }
         let response: ScoreboardResponse = try await load(
             usesWNBAEndpoints
-                ? "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date)&LeagueID=10"
-                : "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date)&LeagueID=00",
+                ? "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date.key)&LeagueID=10"
+                : "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date.key)&LeagueID=00",
             using: session
         )
         return try Self.decodeGames(response.scoreboard.games)
@@ -183,14 +223,16 @@ actor NBAClient: NBAFetching {
         guard !row.gameId.isEmpty, row.gameId.allSatisfy(\.isNumber),
               let state = Game.GameStatus(rawValue: row.gameStatus),
               let home = row.homeTricode, let away = row.awayTricode,
-              !home.isEmpty, !away.isEmpty else { throw NBAError.invalidResponse }
+              !home.isEmpty, !away.isEmpty,
+              let gameTimeUTC = row.gameTimeUTC,
+              ScoreDate.tipoffDate(from: gameTimeUTC) != nil else { throw NBAError.invalidResponse }
         if state != .upcoming && (row.homeScore == nil || row.awayScore == nil) { throw NBAError.invalidResponse }
         let channel = row.nationalBroadcaster?.trimmingCharacters(in: .whitespacesAndNewlines)
         return Game(id: row.gameId, status: state, statusText: row.gameStatusText,
                     broadcaster: channel?.isEmpty == false ? (channel!.uppercased().contains("AMAZON") ? "Prime Video" : channel!) : "",
                     homeTeam: Team(tricode: home, score: row.homeScore ?? 0, leaders: []),
                     awayTeam: Team(tricode: away, score: row.awayScore ?? 0, leaders: []),
-                    period: row.period, gameTimeUTC: row.gameTimeUTC ?? "")
+                    period: row.period, gameTimeUTC: gameTimeUTC)
     }
 
     private func cachedTeam(tricode: String, players: [BoxscorePlayer]) -> CachedTeamBoxScore {
