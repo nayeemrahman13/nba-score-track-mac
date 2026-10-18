@@ -18,13 +18,14 @@ final class NBAService: ObservableObject {
     private var needsRefreshCheck = false
     private var pollingTask: Task<Void, Never>?
     private var leaderTasks: [String: Task<Void, Never>] = [:]
+    private var needsLeaderEnrichment: Set<String> = []
     private var revisions: [String: UUID] = [:]
     private var failureCounts: [String: Int] = [:]
     private var isPopoverVisible = false
     private var selectedOffset = 0
 
     var upcomingDates: [String] {
-        let reference = now()
+        let reference = ScoreDate.date(for: day) ?? now()
         return ScoreDate.upcomingOffsets.map { ScoreDate.key(offset: $0, now: reference) }
     }
 
@@ -59,6 +60,7 @@ final class NBAService: ObservableObject {
 
     func resume() {
         // Sleep and wall-clock changes invalidate attempt-based freshness.
+        day = ScoreDate.key(now: now())
         attemptedAt.removeAll()
         restartPolling()
     }
@@ -116,6 +118,7 @@ final class NBAService: ObservableObject {
         for date in Array(leaderTasks.keys) where !dates.contains(date) {
             leaderTasks.removeValue(forKey: date)?.cancel()
             revisions.removeValue(forKey: date)
+            needsLeaderEnrichment.remove(date)
         }
         let requested = dates.filter { date in
             if force { return true }
@@ -173,6 +176,9 @@ final class NBAService: ObservableObject {
                     game.homeTeam.leaders = old.homeTeam.leaders
                     game.awayTeam.leaders = old.awayTeam.leaders
                 }
+                game.isLoadingLeaders = game.status != .upcoming
+                    && game.homeTeam.leaders.isEmpty
+                    && game.awayTeam.leaders.isEmpty
                 return game
             }.sorted { a, b in
                 let left = order[a.id] ?? Int.max, right = order[b.id] ?? Int.max
@@ -188,11 +194,19 @@ final class NBAService: ObservableObject {
     }
 
     private func enrich(date: String) {
-        // Let a bounded enrichment batch finish even if scores refresh again.
-        guard leaderTasks[date] == nil else { return }
+        // Let a bounded enrichment batch finish even if scores refresh again,
+        // and queue a follow-up pass so newly started/finished games are enriched.
+        if leaderTasks[date] != nil {
+            needsLeaderEnrichment.insert(date)
+            return
+        }
         let revision = UUID()
         revisions[date] = revision
         let candidates = (games[date] ?? []).filter { $0.status != .upcoming }
+        guard !candidates.isEmpty else {
+            needsLeaderEnrichment.remove(date)
+            return
+        }
         let client = self.client
         leaderTasks[date] = Task { [weak self] in
             // Limit concurrent detail requests rather than enqueueing every game.
@@ -204,17 +218,24 @@ final class NBAService: ObservableObject {
                 for _ in 0..<3 { if let game = iterator.next() { enqueue(game) } }
                 for await (id, box) in group {
                     guard !Task.isCancelled else { group.cancelAll(); return }
-                    if let self, self.revisions[date] == revision, let box,
+                    if let self, self.revisions[date] == revision,
                        let index = self.games[date]?.firstIndex(where: { $0.id == id }),
                        let requested = candidates.first(where: { $0.id == id }),
                        self.games[date]?[index].status == requested.status {
-                        self.games[date]?[index].homeTeam.leaders = box.homeTeam.leaders
-                        self.games[date]?[index].awayTeam.leaders = box.awayTeam.leaders
+                        if let box {
+                            self.games[date]?[index].homeTeam.leaders = box.homeTeam.leaders
+                            self.games[date]?[index].awayTeam.leaders = box.awayTeam.leaders
+                        }
+                        self.games[date]?[index].isLoadingLeaders = false
                     }
                     if let game = iterator.next() { enqueue(game) }
                 }
             }
-            if self?.revisions[date] == revision { self?.leaderTasks.removeValue(forKey: date) }
+            guard let self, self.revisions[date] == revision else { return }
+            self.leaderTasks.removeValue(forKey: date)
+            if self.needsLeaderEnrichment.remove(date) != nil, !Task.isCancelled {
+                self.enrich(date: date)
+            }
         }
     }
 }

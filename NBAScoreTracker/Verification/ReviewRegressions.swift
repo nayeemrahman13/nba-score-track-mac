@@ -48,16 +48,56 @@ private actor ScheduleNBA: NBAFetching {
     func leaders(for game: Game) async throws -> CachedBoxScore { throw NBAError.invalidResponse }
 }
 
+private actor EnrichmentNBA: NBAFetching {
+    private var gamesByDate: [String: [Game]] = [:]
+    private var boxesByGame: [String: CachedBoxScore] = [:]
+    private var blockedGameId: String?
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+    private var startedContinuation: CheckedContinuation<Void, Never>?
+
+    func setGames(_ games: [Game], for date: String) { gamesByDate[date] = games }
+    func setBox(_ box: CachedBoxScore, for gameId: String) { boxesByGame[gameId] = box }
+    func block(gameId: String) { blockedGameId = gameId }
+
+    func waitForLeaderFetch() async {
+        if blockedContinuation != nil { return }
+        await withCheckedContinuation { startedContinuation = $0 }
+    }
+
+    func releaseLeaderFetch() {
+        blockedGameId = nil
+        blockedContinuation?.resume()
+        blockedContinuation = nil
+    }
+
+    func scoreboard(for date: String) async throws -> [Game] {
+        gamesByDate[date] ?? []
+    }
+
+    func leaders(for game: Game) async throws -> CachedBoxScore {
+        if game.id == blockedGameId {
+            await withCheckedContinuation { continuation in
+                blockedContinuation = continuation
+                startedContinuation?.resume()
+                startedContinuation = nil
+            }
+        }
+        guard let box = boxesByGame[game.id] else { throw NBAError.invalidResponse }
+        return box
+    }
+}
+
 private final class FixtureProtocol: URLProtocol {
     static var body = ""
     static var bodies: [String: String] = [:]
     static var statuses: [String: Int] = [:]
+    static var headers: [String: String] = [:]
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let date = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "GameDate" })?.value ?? "cdn"
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: Self.statuses[date] ?? 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: Self.statuses[date] ?? 200, httpVersion: nil, headerFields: Self.headers)!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data((Self.bodies[date] ?? Self.body).utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
@@ -134,7 +174,10 @@ private struct ReviewRegressions {
                         awayTeam: Team(tricode: "BOS", score: 90, leaders: []), period: 4, gameTimeUTC: "")
         func payload(players: [[String: Any]]) throws -> String {
             let team: [String: Any] = ["teamTricode": "NYK", "score": 100, "players": players]
-            let box: [String: Any] = ["gameId": game.id, "gameStatus": 2, "homeTeam": team, "awayTeam": team]
+            var away = team
+            away["teamTricode"] = "BOS"
+            away["score"] = 90
+            let box: [String: Any] = ["gameId": game.id, "gameStatus": 2, "homeTeam": team, "awayTeam": away]
             return String(data: try JSONSerialization.data(withJSONObject: ["game": box]), encoding: .utf8)!
         }
         FixtureProtocol.body = try payload(players: [
@@ -277,6 +320,178 @@ private struct ReviewRegressions {
         let fallbackFetched = try await api.scoreboard(for: today)
         precondition(fallbackFetched.map(\.id) == ["0022600012"], "The dated-stats fallback must drop malformed rows too")
         print("PASS: the dated-stats fallback path drops malformed rows while their siblings survive")
+        try await verifySecurityBoundaries()
+    }
+
+    @MainActor
+    private static func verifySecurityBoundaries() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("nba-security-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            FixtureProtocol.body = ""
+            FixtureProtocol.bodies = [:]
+            FixtureProtocol.statuses = [:]
+            FixtureProtocol.headers = [:]
+        }
+        FixtureProtocol.bodies = [:]
+        FixtureProtocol.statuses = [:]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureProtocol.self]
+        let api = NBAClient(session: URLSession(configuration: config), cache: BoxScoreCache(directory: directory))
+        let game = Game(id: "0022600001", status: .live, statusText: "Q1", broadcaster: "",
+                        homeTeam: Team(tricode: "NYK", score: 10, leaders: []),
+                        awayTeam: Team(tricode: "BOS", score: 9, leaders: []), period: 1, gameTimeUTC: "")
+
+        FixtureProtocol.headers = ["Content-Length": "\(NBAFeedLimits.responseBytes + 1)"]
+        FixtureProtocol.body = "{}"
+        do {
+            _ = try await api.leaders(for: game)
+            preconditionFailure("An oversized declared response was accepted")
+        } catch NBAError.responseTooLarge {}
+        FixtureProtocol.headers = ["Content-Length": "1"]
+        FixtureProtocol.body = String(repeating: " ", count: NBAFeedLimits.responseBytes + 1)
+        do {
+            _ = try await api.leaders(for: game)
+            preconditionFailure("An oversized streamed response was accepted")
+        } catch NBAError.responseTooLarge {}
+        print("PASS: oversized HTTP responses are rejected with both truthful and dishonest Content-Length headers")
+        FixtureProtocol.headers = [:]
+
+        func row(id: String = "0022600001", home: String = "NYK", status: String = "Q1") -> CDNGame {
+            CDNGame(gameId: id, gameStatus: 2, gameStatusText: status, period: 1, gameTimeUTC: "2026-10-08T04:00:00Z",
+                    homeTeam: CDNTeam(teamTricode: home, score: 10), awayTeam: CDNTeam(teamTricode: "BOS", score: 9), broadcasters: nil)
+        }
+        let valid = try NBAClient.decodeGames([row(), row(id: String(repeating: "1", count: 1024)),
+                                              row(id: "１２３"), row(id: "../../escape"), row(home: "../logo"),
+                                              row(status: String(repeating: "🏀", count: 65))])
+        precondition(valid.map(\.id) == ["0022600001"])
+        precondition(Team(tricode: "../logo", score: 0, leaders: []).logoURL == nil)
+        do {
+            _ = try NBAClient.decodeGames((0...NBAFeedLimits.games).map { row(id: String(format: "%010d", $0)) })
+            preconditionFailure("An oversized game collection was accepted")
+        } catch NBAError.invalidResponse {}
+        print("PASS: game IDs, logo paths, UTF-8 text, and schedule counts are bounded at the feed boundary")
+
+        func boxBody(players: [[String: Any]]) throws -> String {
+            let box: [String: Any] = ["gameId": game.id, "gameStatus": 2,
+                "homeTeam": ["teamTricode": "NYK", "score": 10, "players": players],
+                "awayTeam": ["teamTricode": "BOS", "score": 9, "players": [["name": "Valid Player"]]]]
+            return String(data: try JSONSerialization.data(withJSONObject: ["game": box]), encoding: .utf8)!
+        }
+        for players in [Array(repeating: ["name": "Player"], count: NBAFeedLimits.playersPerTeam + 1),
+                        [["name": String(repeating: "x", count: 129)]]] {
+            FixtureProtocol.body = try boxBody(players: players)
+            do {
+                _ = try await api.leaders(for: game)
+                preconditionFailure("Oversized player data was accepted")
+            } catch NBAError.invalidResponse {}
+        }
+        FixtureProtocol.body = try boxBody(players: [["name": "Valid Player"]])
+        let acceptedBox = try await api.leaders(for: game)
+        precondition(acceptedBox.homeTeam.leaders.first?.name == "Valid Player")
+        print("PASS: oversized player collections and names fail while a valid box score still loads")
+
+        let team = CachedTeamBoxScore(tricode: "NYK", players: [])
+        func box(_ id: String) -> CachedBoxScore { CachedBoxScore(gameId: id, homeTeam: team, awayTeam: team) }
+        let old = Date().addingTimeInterval(-BoxScoreCache.lifetime - 60)
+        for index in 0..<120 {
+            let url = directory.appendingPathComponent(String(format: "%010d.json", index))
+            try JSONEncoder().encode(box(String(format: "%010d", index))).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: url.path)
+        }
+        let cache = BoxScoreCache(directory: directory)
+        let missing = await cache.get(gameId: "9999999999")
+        let remainingExpiredFiles = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        precondition(missing == nil && remainingExpiredFiles.isEmpty)
+        for index in 0...BoxScoreCache.maximumEntries {
+            let id = String(format: "%010d", index)
+            await cache.save(gameId: id, boxScore: box(id), isFinished: true)
+        }
+        let retained = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        precondition(retained.count == BoxScoreCache.maximumEntries)
+        print("PASS: cache maintenance deletes expired files and bounds the retained file count")
+
+        let largeDirectory = directory.appendingPathComponent("large", isDirectory: true)
+        try FileManager.default.createDirectory(at: largeDirectory, withIntermediateDirectories: true)
+        for index in 0..<100 {
+            let id = String(format: "%010d", index)
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(box(id))) as! [String: Any]
+            object["padding"] = String(repeating: "x", count: 200_000)
+            try JSONSerialization.data(withJSONObject: object).write(to: largeDirectory.appendingPathComponent("\(id).json"))
+        }
+        let largeCache = BoxScoreCache(directory: largeDirectory)
+        _ = await largeCache.get(gameId: "9999999999")
+        let largeFiles = try FileManager.default.contentsOfDirectory(at: largeDirectory, includingPropertiesForKeys: [.fileSizeKey])
+        let totalBytes = try largeFiles.reduce(0) { try $0 + ($1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
+        precondition(totalBytes <= BoxScoreCache.maximumDiskBytes && largeFiles.count < 100)
+        print("PASS: cache pruning enforces the total disk byte budget")
+
+        let id = "9999999999"
+        let url = largeDirectory.appendingPathComponent("\(id).json")
+        try Data(repeating: 32, count: BoxScoreCache.maximumEntryBytes + 1).write(to: url)
+        let oversized = await largeCache.get(gameId: id)
+        precondition(oversized == nil && !FileManager.default.fileExists(atPath: url.path))
+        try JSONEncoder().encode(box("1234567890")).write(to: url)
+        let mismatched = await largeCache.get(gameId: id)
+        precondition(mismatched == nil && !FileManager.default.fileExists(atPath: url.path))
+        await largeCache.save(gameId: "../escape", boxScore: box("../escape"), isFinished: true)
+        precondition(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("escape.json").path))
+        print("PASS: oversized and mismatched disk records are removed and cache paths cannot escape their directory")
+
+        // Verify leader tie-breaking prefers active players and secondary stats over bench players.
+        FixtureProtocol.body = try boxBody(players: [
+            ["personId": 1, "name": "Alpha Bench", "position": "G", "statistics": ["points": 0, "reboundsTotal": 0, "assists": 0, "minutes": "PT00M00.00S"]],
+            ["personId": 2, "name": "Zeta Starter", "position": "F", "statistics": ["points": 0, "reboundsTotal": 0, "assists": 0, "minutes": "PT04M12.00S",
+                                                                                    "fieldGoalsMade": 0, "fieldGoalsAttempted": 2, "steals": 1]]
+        ])
+        let tieBroken = try await api.leaders(for: game)
+        let firstLeader = tieBroken.homeTeam.leaders.first!
+        precondition(firstLeader.id == "nba:2" && firstLeader.formattedMinutes == "4 MIN" && firstLeader.detailTooltip.contains("1 STL"))
+        print("PASS: player leader tie-breaking prefers active players and preserves detailed box-score stats")
+
+        // Verify queued follow-up enrichment when a game turns live during an in-flight leader batch.
+        let enrichDate = "2026-10-18"
+        let enrichClock = ScoreDate.date(for: enrichDate)!
+        let enrichClient = EnrichmentNBA()
+        let game1 = Game(id: "0022600101", status: .live, statusText: "Q2", broadcaster: "",
+                         homeTeam: Team(tricode: "NYK", score: 50, leaders: []),
+                         awayTeam: Team(tricode: "BOS", score: 48, leaders: []),
+                         period: 2, gameTimeUTC: "2026-10-18T23:00:00Z")
+        var game2 = Game(id: "0022600102", status: .upcoming, statusText: "7:30 pm ET", broadcaster: "",
+                         homeTeam: Team(tricode: "LAL", score: 0, leaders: []),
+                         awayTeam: Team(tricode: "GSW", score: 0, leaders: []),
+                         period: 0, gameTimeUTC: "2026-10-18T23:30:00Z")
+        let playerLeader = CachedPlayer(id: "nba:99", name: "Star Player", nameI: "S. Player", position: "G",
+                                        points: 25, rebounds: 5, assists: 7, steals: 2, blocks: 1,
+                                        minutes: "PT32M00.00S", fgm: 9, fga: 15, threePm: 4, threePa: 8, ftm: 3, fta: 3)
+        let teamBox = CachedTeamBoxScore(tricode: "NYK", players: [playerLeader])
+        await enrichClient.setGames([game1, game2], for: enrichDate)
+        await enrichClient.setBox(CachedBoxScore(gameId: game1.id, homeTeam: teamBox, awayTeam: teamBox), for: game1.id)
+        await enrichClient.setBox(CachedBoxScore(gameId: game2.id, homeTeam: teamBox, awayTeam: teamBox), for: game2.id)
+        await enrichClient.block(gameId: game1.id)
+
+        let enrichService = NBAService(client: enrichClient, now: { enrichClock })
+        await enrichService.refreshAll()
+        await enrichClient.waitForLeaderFetch()
+        precondition(enrichService.games[enrichDate]?.first(where: { $0.id == game1.id })?.isLoadingLeaders == true)
+
+        // Game 2 flips from upcoming to live while Game 1's leader request is still in flight.
+        game2 = Game(id: "0022600102", status: .live, statusText: "Q1", broadcaster: "",
+                     homeTeam: Team(tricode: "LAL", score: 4, leaders: []),
+                     awayTeam: Team(tricode: "GSW", score: 2, leaders: []),
+                     period: 1, gameTimeUTC: "2026-10-18T23:30:00Z")
+        await enrichClient.setGames([game1, game2], for: enrichDate)
+        await enrichService.refreshAll()
+        await enrichClient.releaseLeaderFetch()
+        for _ in 0..<50 {
+            if enrichService.games[enrichDate]?.allSatisfy({ !$0.isLoadingLeaders && !$0.homeTeam.leaders.isEmpty }) == true {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let finalGames = enrichService.games[enrichDate] ?? []
+        precondition(finalGames.count == 2 && finalGames.allSatisfy { !$0.isLoadingLeaders && $0.homeTeam.leaders.first?.points == 25 })
+        print("PASS: leader enrichment tracks loading state and runs a queued follow-up pass when games turn live mid-batch")
     }
 
     @MainActor

@@ -3,6 +3,7 @@ import AppKit
 
 struct SettingsView: View {
     @ObservedObject var launchManager = LaunchAtLoginManager.shared
+    @ObservedObject private var updateManager = UpdateManager.shared
     var onClose: () -> Void = {}
     
     var body: some View {
@@ -43,6 +44,28 @@ struct SettingsView: View {
                         .toggleStyle(.switch)
                         .labelsHidden()
                 }
+                settingRow(icon: "arrow.clockwise", title: "Check for Updates", subtitle: "Look for updates automatically") {
+                    Toggle("Check for updates automatically", isOn: Binding(
+                        get: { updateManager.automaticallyChecksForUpdates },
+                        set: { updateManager.setAutomaticChecks($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                }
+                settingRow(icon: "arrow.down.circle", title: "Install Updates", subtitle: "Download and install when you quit") {
+                    Toggle("Download and install updates automatically", isOn: Binding(
+                        get: { updateManager.automaticallyDownloadsUpdates },
+                        set: { updateManager.setAutomaticDownloads($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled(!updateManager.automaticallyChecksForUpdates)
+                }
+                Button(updateManager.updateAvailable ? "Install available update…" : "Check for Updates…") {
+                    updateManager.checkForUpdates()
+                }
+                .disabled(!updateManager.canCheckForUpdates)
+                .padding(.top, 10)
             }
             .padding(.vertical, 8)
             
@@ -64,13 +87,13 @@ struct SettingsView: View {
             VStack(spacing: 4) {
                 Text("NBA Score Tracker")
                     .font(.system(size: 11, weight: .medium))
-                Text("Version 1.0")
+                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""))")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
             .padding(.bottom, 12)
         }
-        .frame(width: 320, height: 250)
+        .frame(width: 360, height: 360)
         .onAppear { launchManager.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             launchManager.refresh()
@@ -119,7 +142,7 @@ final class SettingsWindowController: NSWindowController {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 250),
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 360),
             styleMask: [.titled, .closable], backing: .buffered, defer: false
         )
         window.title = "NBA Tracker"

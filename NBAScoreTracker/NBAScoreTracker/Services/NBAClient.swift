@@ -11,6 +11,7 @@ enum NBAError: LocalizedError {
     case http(Int)
     case invalidResponse
     case wrongDate
+    case responseTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,7 @@ enum NBAError: LocalizedError {
         case .http(let status): return "NBA returned an error (\(status)). We'll retry automatically."
         case .invalidResponse: return "NBA returned incomplete data. We'll retry automatically."
         case .wrongDate: return "The live scoreboard belongs to another date."
+        case .responseTooLarge: return "NBA returned unusually large data. We'll retry automatically."
         }
     }
 }
@@ -167,7 +169,9 @@ actor NBAClient: NBAFetching {
         guard let box = response.game, box.gameId == game.id,
               let home = box.homeTeam, let away = box.awayTeam,
               let homePlayers = home.players, let awayPlayers = away.players,
-              !homePlayers.isEmpty, !awayPlayers.isEmpty else { throw NBAError.invalidResponse }
+              Self.validPlayers(homePlayers), Self.validPlayers(awayPlayers),
+              home.teamTricode == nil || home.teamTricode == game.homeTeam.tricode,
+              away.teamTricode == nil || away.teamTricode == game.awayTeam.tricode else { throw NBAError.invalidResponse }
         let result = CachedBoxScore(
             gameId: game.id,
             homeTeam: cachedTeam(tricode: home.teamTricode ?? game.homeTeam.tricode, players: homePlayers),
@@ -190,12 +194,110 @@ actor NBAClient: NBAFetching {
         request.setValue("https://www.nba.com", forHTTPHeaderField: "Origin")
         request.setValue("https://www.nba.com/", forHTTPHeaderField: "Referer")
         // URLSession supplies Host, Connection and compression headers correctly.
-        let (data, response) = try await session.data(for: request)
+        let data = try await fetchBoundedData(for: request, using: session)
         try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse else { throw NBAError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else { throw NBAError.http(http.statusCode) }
         return try JSONDecoder().decode(T.self, from: data)
         // Retrying belongs to the polling coordinator, not nested request loops.
+    }
+
+    private func fetchBoundedData(for request: URLRequest, using session: URLSession) async throws -> Data {
+        final class BoundedState: @unchecked Sendable {
+            let lock = NSLock()
+            var data = Data()
+            var responseError: Error?
+            var completed = false
+            weak var task: URLSessionDataTask?
+        }
+
+        final class BoundedDelegate: NSObject, URLSessionDataDelegate {
+            let state: BoundedState
+            let continuation: CheckedContinuation<Data, Error>
+
+            init(state: BoundedState, continuation: CheckedContinuation<Data, Error>) {
+                self.state = state
+                self.continuation = continuation
+            }
+
+            func urlSession(
+                _ session: URLSession,
+                dataTask: URLSessionDataTask,
+                didReceive response: URLResponse,
+                completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+            ) {
+                state.lock.lock()
+                defer { state.lock.unlock() }
+                guard let http = response as? HTTPURLResponse else {
+                    state.responseError = NBAError.invalidResponse
+                    completionHandler(.cancel)
+                    return
+                }
+                guard (200..<300).contains(http.statusCode) else {
+                    state.responseError = NBAError.http(http.statusCode)
+                    completionHandler(.cancel)
+                    return
+                }
+                guard response.expectedContentLength <= Int64(NBAFeedLimits.responseBytes) else {
+                    state.responseError = NBAError.responseTooLarge
+                    completionHandler(.cancel)
+                    return
+                }
+                state.data.reserveCapacity(min(NBAFeedLimits.responseBytes, max(0, Int(response.expectedContentLength))))
+                completionHandler(.allow)
+            }
+
+            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+                state.lock.lock()
+                defer { state.lock.unlock() }
+                guard state.responseError == nil else { return }
+                guard state.data.count + chunk.count <= NBAFeedLimits.responseBytes else {
+                    state.responseError = NBAError.responseTooLarge
+                    dataTask.cancel()
+                    return
+                }
+                state.data.append(chunk)
+            }
+
+            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+                state.lock.lock()
+                guard !state.completed else {
+                    state.lock.unlock()
+                    return
+                }
+                state.completed = true
+                let responseError = state.responseError
+                let data = state.data
+                state.lock.unlock()
+
+                if let responseError {
+                    continuation.resume(throwing: responseError)
+                } else if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: data)
+                }
+            }
+        }
+
+        let state = BoundedState()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let delegate = BoundedDelegate(state: state, continuation: continuation)
+                let task = session.dataTask(with: request)
+                task.delegate = delegate
+                state.lock.lock()
+                state.task = task
+                state.lock.unlock()
+                if Task.isCancelled {
+                    task.cancel()
+                }
+                task.resume()
+            }
+        } onCancel: {
+            state.lock.lock()
+            let task = state.task
+            state.lock.unlock()
+            task?.cancel()
+        }
     }
 
     // Row validation shared by both scoreboard paths. Per-row problems are data and
@@ -203,13 +305,14 @@ actor NBAClient: NBAFetching {
     // not read as an empty day, so rows present with zero valid games still throw —
     // only a genuinely empty array returns an empty schedule.
     static func decodeGames<Row: ScoreboardGame>(_ rows: [Row], log: Logger = Logger()) throws -> [Game] {
+        guard rows.count <= NBAFeedLimits.games else { throw NBAError.invalidResponse }
         guard !rows.isEmpty else { return [] }
         var valid: [Game] = []
         for row in rows {
             do {
                 valid.append(try makeGame(from: row))
             } catch NBAError.invalidResponse {
-                log.warning("Dropped malformed game row (id=\(row.gameId, privacy: .public)).")
+                log.warning("Dropped malformed game row (id=\(String(row.gameId.prefix(20)), privacy: .public)).")
             } catch {
                 // makeGame throws nothing else today; unknown failures stay structural.
                 throw error
@@ -220,19 +323,36 @@ actor NBAClient: NBAFetching {
     }
 
     private static func makeGame(from row: some ScoreboardGame) throws -> Game {
-        guard !row.gameId.isEmpty, row.gameId.allSatisfy(\.isNumber),
+        guard NBAFeedLimits.isGameID(row.gameId),
               let state = Game.GameStatus(rawValue: row.gameStatus),
               let home = row.homeTricode, let away = row.awayTricode,
-              !home.isEmpty, !away.isEmpty,
+              NBAFeedLimits.isTricode(home), NBAFeedLimits.isTricode(away),
+              NBAFeedLimits.isText(row.gameStatusText), NBAFeedLimits.isText(row.nationalBroadcaster),
               let gameTimeUTC = row.gameTimeUTC,
-              ScoreDate.tipoffDate(from: gameTimeUTC) != nil else { throw NBAError.invalidResponse }
+              NBAFeedLimits.isText(gameTimeUTC, maximumBytes: 64),
+              let tipoff = ScoreDate.tipoffDate(from: gameTimeUTC) else { throw NBAError.invalidResponse }
         if state != .upcoming && (row.homeScore == nil || row.awayScore == nil) { throw NBAError.invalidResponse }
         let channel = row.nationalBroadcaster?.trimmingCharacters(in: .whitespacesAndNewlines)
         return Game(id: row.gameId, status: state, statusText: row.gameStatusText,
                     broadcaster: channel?.isEmpty == false ? (channel!.uppercased().contains("AMAZON") ? "Prime Video" : channel!) : "",
                     homeTeam: Team(tricode: home, score: row.homeScore ?? 0, leaders: []),
                     awayTeam: Team(tricode: away, score: row.awayScore ?? 0, leaders: []),
-                    period: row.period, gameTimeUTC: gameTimeUTC)
+                    period: row.period, gameTimeUTC: gameTimeUTC, startDate: tipoff,
+                    isLoadingLeaders: state != .upcoming)
+    }
+
+    private static func hasPlayed(_ minutes: String?) -> Bool {
+        guard let minutes = minutes?.trimmingCharacters(in: .whitespacesAndNewlines), !minutes.isEmpty else { return false }
+        return minutes != "PT00M00.00S" && minutes != "PT0M0S" && minutes != "0:00" && minutes != "00:00" && minutes != "0"
+    }
+
+    private static func validPlayers(_ players: [BoxscorePlayer]) -> Bool {
+        !players.isEmpty && players.count <= NBAFeedLimits.playersPerTeam && players.allSatisfy {
+            NBAFeedLimits.isText($0.name, maximumBytes: 128)
+                && NBAFeedLimits.isText($0.nameI, maximumBytes: 128)
+                && NBAFeedLimits.isText($0.position, maximumBytes: 16)
+                && NBAFeedLimits.isText($0.statistics?.minutes, maximumBytes: 64)
+        }
     }
 
     private func cachedTeam(tricode: String, players: [BoxscorePlayer]) -> CachedTeamBoxScore {
@@ -250,6 +370,10 @@ actor NBAClient: NBAFetching {
             if (a?.points ?? 0) != (b?.points ?? 0) { return (a?.points ?? 0) > (b?.points ?? 0) }
             if (a?.reboundsTotal ?? 0) != (b?.reboundsTotal ?? 0) { return (a?.reboundsTotal ?? 0) > (b?.reboundsTotal ?? 0) }
             if (a?.assists ?? 0) != (b?.assists ?? 0) { return (a?.assists ?? 0) > (b?.assists ?? 0) }
+            if (a?.steals ?? 0) != (b?.steals ?? 0) { return (a?.steals ?? 0) > (b?.steals ?? 0) }
+            if (a?.blocks ?? 0) != (b?.blocks ?? 0) { return (a?.blocks ?? 0) > (b?.blocks ?? 0) }
+            let aPlayed = Self.hasPlayed(a?.minutes), bPlayed = Self.hasPlayed(b?.minutes)
+            if aPlayed != bPlayed { return aPlayed && !bPlayed }
             return ($0.player.name ?? "") < ($1.player.name ?? "")
         }
         return CachedTeamBoxScore(tricode: tricode, players: sorted.map { entry in

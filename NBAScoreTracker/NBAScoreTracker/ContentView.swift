@@ -2,9 +2,11 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var nbaService: NBAService
+    @ObservedObject private var updateManager = UpdateManager.shared
     @State private var selectedOffset = 0
 
-    private var dateKey: String { ScoreDate.key(offset: selectedOffset) }
+    private var baseDate: Date { ScoreDate.date(for: nbaService.day) ?? Date() }
+    private var dateKey: String { ScoreDate.key(offset: selectedOffset, now: baseDate) }
     private var selectedLabel: String { selectedOffset == 0 ? "Today" : selectedOffset < 0 ? "Yesterday" : "Upcoming" }
     private var visibleDateKeys: [String] { selectedOffset == 1 ? nbaService.upcomingDates : [dateKey] }
     private var currentGames: [Game] { nbaService.games[dateKey] ?? [] }
@@ -69,7 +71,7 @@ struct ContentView: View {
                     if selectedOffset == 1 {
                         Text("Next 3 days · starting tomorrow")
                     } else {
-                        Text(Calendar.current.date(byAdding: .day, value: selectedOffset, to: Date()) ?? Date(), format: .dateTime.weekday(.wide).month(.abbreviated).day())
+                        Text(Calendar.current.date(byAdding: .day, value: selectedOffset, to: baseDate) ?? baseDate, format: .dateTime.weekday(.wide).month(.abbreviated).day())
                     }
                 }
                 .font(.system(size: 11))
@@ -119,6 +121,12 @@ struct ContentView: View {
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             Spacer()
+            if updateManager.updateAvailable {
+                Button("Update available…") { updateManager.checkForUpdates() }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11))
+                    .disabled(!updateManager.canCheckForUpdates)
+            }
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.borderless)
                 .font(.system(size: 11))

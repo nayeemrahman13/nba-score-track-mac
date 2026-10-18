@@ -4,9 +4,14 @@ import Foundation
 /// Only verified final box scores are cached, with a TTL for official corrections.
 actor BoxScoreCache {
     static let shared = BoxScoreCache()
+    static let lifetime: TimeInterval = 21_600
+    static let maximumEntryBytes = 256 * 1024
+    static let maximumDiskBytes = 16 * 1024 * 1024
+    static let maximumEntries = 100
     
     private let cacheDirectory: URL
     private var memoryCache: [String: CachedBoxScore] = [:]
+    private var lastPrunedAt: Date?
     
     init(directory: URL? = nil) {
         let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -21,26 +26,32 @@ actor BoxScoreCache {
     
     /// Returns cached box score if available, nil otherwise
     func get(gameId: String) -> CachedBoxScore? {
+        guard NBAFeedLimits.isGameID(gameId) else { return nil }
+        pruneDisk()
         // Check memory cache first
-        if let cached = memoryCache[gameId], Date().timeIntervalSince(cached.cachedAt) < 21_600 {
+        if let cached = memoryCache[gameId], isFresh(cached.cachedAt) {
             return cached
         }
+        memoryCache.removeValue(forKey: gameId)
         
         // Check disk cache
-        if let cached = loadFromDisk(gameId: gameId), Date().timeIntervalSince(cached.cachedAt) < 21_600 {
-            memoryCache[gameId] = cached
+        if let cached = loadFromDisk(gameId: gameId), cached.gameId == gameId, isFresh(cached.cachedAt) {
+            remember(cached, for: gameId)
             return cached
         }
+        try? FileManager.default.removeItem(at: fileURL(for: gameId))
         
         return nil
     }
     
     /// Saves box score to cache (both memory and disk for finished games)
     func save(gameId: String, boxScore: CachedBoxScore, isFinished: Bool) {
-        guard isFinished else { return }
-        if memoryCache.count >= 100 { memoryCache.removeAll() }
-        memoryCache[gameId] = boxScore
-        saveToDisk(gameId: gameId, boxScore: boxScore)
+        guard isFinished, NBAFeedLimits.isGameID(gameId), boxScore.gameId == gameId,
+              isFresh(boxScore.cachedAt),
+              let data = try? JSONEncoder().encode(boxScore), data.count <= Self.maximumEntryBytes else { return }
+        remember(boxScore, for: gameId)
+        try? data.write(to: fileURL(for: gameId), options: .atomic)
+        pruneDisk(force: true)
     }
     
     /// Checks if a finished game's box score is already cached
@@ -54,20 +65,60 @@ actor BoxScoreCache {
         cacheDirectory.appendingPathComponent("\(gameId).json")
     }
     
-    private func fileExists(gameId: String) -> Bool {
-        FileManager.default.fileExists(atPath: fileURL(for: gameId).path)
+    private func isFresh(_ date: Date) -> Bool {
+        let age = Date().timeIntervalSince(date)
+        return age >= 0 && age < Self.lifetime
+    }
+
+    private func remember(_ box: CachedBoxScore, for gameId: String) {
+        memoryCache = memoryCache.filter { isFresh($0.value.cachedAt) }
+        if memoryCache[gameId] == nil, memoryCache.count >= Self.maximumEntries,
+           let oldest = memoryCache.min(by: { $0.value.cachedAt < $1.value.cachedAt })?.key {
+            memoryCache.removeValue(forKey: oldest)
+        }
+        memoryCache[gameId] = box
     }
     
     private func loadFromDisk(gameId: String) -> CachedBoxScore? {
         let url = fileURL(for: gameId)
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true,
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: Self.maximumEntryBytes + 1),
+              data.count <= Self.maximumEntryBytes else { return nil }
         return try? JSONDecoder().decode(CachedBoxScore.self, from: data)
     }
     
-    private func saveToDisk(gameId: String, boxScore: CachedBoxScore) {
-        let url = fileURL(for: gameId)
-        guard let data = try? JSONEncoder().encode(boxScore) else { return }
-        try? data.write(to: url, options: .atomic)
+    private func pruneDisk(force: Bool = false) {
+        let now = Date()
+        if !force, let lastPrunedAt, now.timeIntervalSince(lastPrunedAt) >= 0,
+           now.timeIntervalSince(lastPrunedAt) < 300 { return }
+        lastPrunedAt = now
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: cacheDirectory,
+            includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return }
+        var entries: [(url: URL, size: Int, modified: Date)] = []
+        for url in files where url.pathExtension == "json" {
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true, values.isSymbolicLink != true,
+                  NBAFeedLimits.isGameID(url.deletingPathExtension().lastPathComponent),
+                  let size = values.fileSize, size <= Self.maximumEntryBytes,
+                  let modified = values.contentModificationDate, isFresh(modified) else {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            entries.append((url, size, modified))
+        }
+        entries.sort { $0.modified > $1.modified }
+        var totalBytes = 0
+        for (index, entry) in entries.enumerated() {
+            totalBytes += entry.size
+            if index >= Self.maximumEntries || totalBytes > Self.maximumDiskBytes {
+                try? FileManager.default.removeItem(at: entry.url)
+                memoryCache.removeValue(forKey: entry.url.deletingPathExtension().lastPathComponent)
+            }
+        }
     }
 }
 
@@ -130,7 +181,16 @@ struct CachedPlayer: Codable {
             position: position,
             points: points,
             rebounds: rebounds,
-            assists: assists
+            assists: assists,
+            steals: steals,
+            blocks: blocks,
+            minutes: minutes,
+            fgm: fgm,
+            fga: fga,
+            threePm: threePm,
+            threePa: threePa,
+            ftm: ftm,
+            fta: fta
         )
     }
 }

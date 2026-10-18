@@ -153,10 +153,20 @@ struct GameRowView: View {
             }
             
             if game.homeTeam.leaders.isEmpty && game.awayTeam.leaders.isEmpty {
-                Text("Leaders unavailable")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                if game.isLoadingLeaders {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("Loading leaders…")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                     .padding(.vertical, 8)
+                } else {
+                    Text("Leaders unavailable")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .padding(.vertical, 8)
+                }
             }
         }
         .padding(.horizontal, 8)

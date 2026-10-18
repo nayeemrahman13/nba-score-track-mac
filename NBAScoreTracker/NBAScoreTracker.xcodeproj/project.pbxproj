@@ -19,6 +19,9 @@
 		A1000010 /* LaunchAtLoginManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000010 /* LaunchAtLoginManager.swift */; };
 		A1000011 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000011 /* SettingsView.swift */; };
 		A1000012 /* NBAClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000012 /* NBAClient.swift */; };
+		A1000013 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A9100002 /* Sparkle */; };
+		A1000014 /* UpdateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000013 /* UpdateManager.swift */; };
+		A1000015 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A2000015 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -35,6 +38,10 @@
 		A2000011 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A3000001 /* NBAScoreTracker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NBAScoreTracker.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000012 /* NBAClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NBAClient.swift; sourceTree = "<group>"; };
+		A2000013 /* UpdateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateManager.swift; sourceTree = "<group>"; };
+		A2000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000015 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A2000016 /* Updates.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Updates.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -42,6 +49,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1000013 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +73,9 @@
 				A5000005 /* Models */,
 				A5000006 /* Services */,
 				A2000003 /* Assets.xcassets */,
+				A2000014 /* Info.plist */,
+				A2000015 /* PrivacyInfo.xcprivacy */,
+				A2000016 /* Updates.xcconfig */,
 			);
 			path = NBAScoreTracker;
 			sourceTree = "<group>";
@@ -103,6 +114,7 @@
 				A2000012 /* NBAClient.swift */,
 				A2000009 /* BoxScoreCache.swift */,
 				A2000010 /* LaunchAtLoginManager.swift */,
+				A2000013 /* UpdateManager.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -124,6 +136,9 @@
 			);
 			name = NBAScoreTracker;
 			productName = NBAScoreTracker;
+			packageProductDependencies = (
+				A9100002 /* Sparkle */,
+			);
 			productReference = A3000001 /* NBAScoreTracker.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -151,6 +166,9 @@
 				Base,
 			);
 			mainGroup = A5000001;
+			packageReferences = (
+				A9100001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			productRefGroup = A5000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -166,6 +184,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000003 /* Assets.xcassets in Resources */,
+				A1000015 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -181,6 +200,7 @@
 				A1000004 /* Game.swift in Sources */,
 				A1000005 /* NBAService.swift in Sources */,
 				A1000012 /* NBAClient.swift in Sources */,
+				A1000014 /* UpdateManager.swift in Sources */,
 				A1000009 /* BoxScoreCache.swift in Sources */,
 				A1000010 /* LaunchAtLoginManager.swift in Sources */,
 				A1000006 /* GameRowView.swift in Sources */,
@@ -315,6 +335,7 @@
 		};
 		A9000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A2000016 /* Updates.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -337,6 +358,7 @@
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NBAScoreTracker/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -353,16 +375,21 @@
 		};
 		A9000004 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A2000016 /* Updates.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NBAScoreTracker/NBAScoreTracker.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_IDENTITY = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = E4Y8VJA2GT;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
@@ -375,6 +402,7 @@
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NBAScoreTracker/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -411,6 +439,22 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A9100001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = { kind = exactVersion; version = 2.10.0; };
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A9100002 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A9100001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A8000001 /* Project object */;
 }
