@@ -1,5 +1,23 @@
 import Foundation
 
+enum NBAFeedLimits {
+    static let responseBytes = 2 * 1024 * 1024
+    static let games = 64
+    static let playersPerTeam = 64
+
+    static func isGameID(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 20 && value.utf8.allSatisfy { (48...57).contains($0) }
+    }
+
+    static func isTricode(_ value: String) -> Bool {
+        (2...4).contains(value.utf8.count) && value.utf8.allSatisfy { (65...90).contains($0) }
+    }
+
+    static func isText(_ value: String?, maximumBytes: Int = 256) -> Bool {
+        value.map { $0.utf8.count <= maximumBytes } ?? true
+    }
+}
+
 // MARK: - CDN Scoreboard Response (cdn.nba.com - more reliable)
 struct CDNScoreboardResponse: Codable {
     let scoreboard: CDNScoreboard
@@ -122,8 +140,32 @@ struct Game: Identifiable {
     var awayTeam: Team
     let period: Int
     let gameTimeUTC: String
+    let startDate: Date?
+    var isLoadingLeaders = false
 
-    var startDate: Date? { ScoreDate.tipoffDate(from: gameTimeUTC) }
+    init(
+        id: String,
+        status: GameStatus,
+        statusText: String,
+        broadcaster: String,
+        homeTeam: Team,
+        awayTeam: Team,
+        period: Int,
+        gameTimeUTC: String,
+        startDate: Date? = nil,
+        isLoadingLeaders: Bool = false
+    ) {
+        self.id = id
+        self.status = status
+        self.statusText = statusText
+        self.broadcaster = broadcaster
+        self.homeTeam = homeTeam
+        self.awayTeam = awayTeam
+        self.period = period
+        self.gameTimeUTC = gameTimeUTC
+        self.startDate = startDate ?? ScoreDate.tipoffDate(from: gameTimeUTC)
+        self.isLoadingLeaders = isLoadingLeaders
+    }
     
     enum GameStatus: Int {
         case upcoming = 1
@@ -139,6 +181,7 @@ struct Team: Identifiable {
     var leaders: [Player]
     
     var logoURL: URL? {
+        guard NBAFeedLimits.isTricode(tricode) else { return nil }
         let mapping = ["UTA": "utah", "NOP": "no"]
         let filename = mapping[tricode] ?? tricode.lowercased()
         return URL(string: "https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/\(filename).png")
@@ -153,6 +196,49 @@ struct Player: Identifiable {
     let points: Int
     let rebounds: Int
     let assists: Int
+    var steals: Int = 0
+    var blocks: Int = 0
+    var minutes: String = ""
+    var fgm: Int = 0
+    var fga: Int = 0
+    var threePm: Int = 0
+    var threePa: Int = 0
+    var ftm: Int = 0
+    var fta: Int = 0
+
+    var formattedMinutes: String? {
+        // Convert ISO-8601 duration "PT34M12.00S" or "34:12" to compact minutes
+        let trimmed = minutes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("PT") {
+            let body = trimmed.dropFirst(2)
+            if let mIndex = body.firstIndex(of: "M") {
+                let mins = String(body[..<mIndex])
+                if let m = Int(mins), m > 0 { return "\(m) MIN" }
+                if mins == "0", let sIndex = body.firstIndex(of: "S"),
+                   let secs = Double(body[body.index(after: mIndex)..<sIndex]), secs > 0 {
+                    return "<1 MIN"
+                }
+                return nil
+            }
+        }
+        if let m = Int(trimmed.split(separator: ":").first ?? ""), m > 0 {
+            return "\(m) MIN"
+        }
+        return nil
+    }
+
+    var detailTooltip: String {
+        var parts = [name]
+        if !position.isEmpty { parts[0] += " (\(position))" }
+        if let minText = formattedMinutes { parts.append(minText) }
+        if fga > 0 { parts.append("FG \(fgm)-\(fga)") }
+        if threePa > 0 { parts.append("3PT \(threePm)-\(threePa)") }
+        if fta > 0 { parts.append("FT \(ftm)-\(fta)") }
+        if steals > 0 { parts.append("\(steals) STL") }
+        if blocks > 0 { parts.append("\(blocks) BLK") }
+        return parts.joined(separator: " · ")
+    }
 }
 
 // Tabs use local calendar days. Transport dates belong to the league's Eastern
@@ -160,6 +246,16 @@ struct Player: Identifiable {
 enum ScoreDate {
     static let upcomingOffsets = [1, 2, 3]
     static let trackedOffsets = [0, -1] + upcomingOffsets
+    private static let lock = NSLock()
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
+    private static let isoFractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions.insert(.withFractionalSeconds)
+        return formatter
+    }()
 
     private static func calendar(in timeZone: TimeZone) -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -194,20 +290,21 @@ enum ScoreDate {
     }
 
     static func tipoffDate(from value: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions.insert(.withFractionalSeconds)
-        return formatter.date(from: value)
+        guard !value.isEmpty else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        if let date = isoFormatter.date(from: value) { return date }
+        return isoFractionalFormatter.date(from: value)
     }
 }
 
 struct LeagueDate: Hashable {
     let key: String
-    private static var calendar: Calendar {
+    private static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
         return calendar
-    }
+    }()
 
     init(containing date: Date) {
         key = ScoreDate.key(now: date, timeZone: Self.calendar.timeZone)

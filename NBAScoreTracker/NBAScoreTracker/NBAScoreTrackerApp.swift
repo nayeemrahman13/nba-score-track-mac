@@ -3,7 +3,9 @@ import AppKit
 
 @main
 struct NBAScoreTrackerApp: App {
+    @NSApplicationDelegateAdaptor(TrackerAppDelegate.self) private var appDelegate
     @StateObject private var nbaService = NBAService()
+    @StateObject private var updateManager = UpdateManager.shared
     
     var body: some Scene {
         MenuBarExtra {
@@ -29,8 +31,9 @@ struct NBAScoreTrackerApp: App {
                     nbaService.setPopoverVisible(false)
                 }
         } label: {
-            Image(systemName: "basketball.fill")
+            Image(systemName: updateManager.updateAvailable ? "arrow.down.circle.fill" : "basketball.fill")
                 .symbolRenderingMode(.hierarchical)
+                .help(updateManager.updateAvailable ? "NBA Tracker update available" : "NBA Tracker")
         }
         .menuBarExtraStyle(.window)
     }

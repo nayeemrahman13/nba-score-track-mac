@@ -15,7 +15,7 @@ struct LeadersView: View {
                     Text(player.name)
                         .font(.system(size: 11))
                         .lineLimit(1)
-                        .help(player.name)
+                        .help(player.detailTooltip)
                     
                     Spacer()
                     

@@ -19,11 +19,19 @@ xcodebuild -project NBAScoreTracker/NBAScoreTracker.xcodeproj \
 - Window visibility, wake, clock, timezone, and calendar-day notifications update polling. The CDN's `gameDate` must match the requested Eastern league date before its response is accepted. Local days use calendar boundaries, including 23-hour and 25-hour DST days, and exclude the next midnight. Rows without a usable UTC tipoff are malformed and cannot be assigned to a local date.
 - `BoxScoreCache` accepts only confirmed final results with matching scoreboard totals. Entries expire after six hours to allow official corrections. The v2 directory excludes potentially incomplete data from the previous implementation.
 
+Network responses have a 2 MiB limit enforced during download, including responses without a trustworthy `Content-Length`. Feed validation bounds game IDs, team codes, text, and collection sizes. The disk cache removes expired files and keeps at most 100 entries totaling 16 MiB, with a 256 KiB limit per entry. Maintenance runs on writes and at most every five minutes on reads.
+
 Settings opens in a retained, independent window rather than a sheet on the transient menu-bar panel, so login-item approval and focus changes cannot dismiss it. Login-item status is refreshed when the app becomes active again.
 
 Upcoming shows the next three calendar days starting tomorrow, grouped under date headings and ordered by tipoff within each day. All three schedules are prefetched; each keeps its own loading, empty, error, and retained-data state. The footer reports partial loading until all three dates have succeeded, and uses the oldest update time for the group. Yesterday and Today remain single-day views.
 
 The UI distinguishes initial loading, a successful empty schedule, initial failure, and failure with retained scores. Refresh is available through the toolbar or ⌘R. Game rows are native keyboard-accessible buttons, score updates do not animate, and press feedback respects Reduce Motion. Tipoff times use the local timezone. Missing broadcast information is omitted rather than guessed.
+
+## Updates and public releases
+
+Sparkle 2.10.0 provides automatic update checks, an opt-in setting for downloading and installing updates when the app quits, and a manual **Check for Updates** button in Settings. Updates use signed appcasts and archives hosted on this repository's GitHub Releases.
+
+Release builds use Developer ID signing, Hardened Runtime, and the existing app sandbox. Follow [the release guide](docs/releases.md) to archive, export, notarize, staple, and verify an app before publishing.
 
 ## Verification
 
@@ -40,8 +48,10 @@ xcrun swiftc -parse-as-library -module-cache-path /tmp/nba-swift-module-cache \
 
 These checks cover local date grouping in Hong Kong and Pacific time, overlapping schedule failures and recovery, timezone changes, DST boundaries, wake/day rollover during an in-flight request, normal refresh coalescing, player identity through ranking and cache reloads, duplicate/missing IDs, legacy cache decoding, the three-day schedule across year boundaries with partial failures, and tolerant scoreboard decoding that drops malformed game rows while keeping their siblings. NBA player IDs are assigned before ranking and persisted in the cache; missing IDs use roster-scoped fallbacks, and old cache records use unique row slots until refreshed.
 
+The security checks also exercise oversized HTTP responses with truthful and dishonest length headers, field and collection limits, cache expiry cleanup, disk budgets, oversized cache files, and invalid cache paths.
+
 For refresh changes, verify concurrent refreshes, offline recovery, successful empty schedules, midnight rollover, live-to-final cache transitions, and a slow box score alongside a faster scoreboard. Inspect light/dark appearance, keyboard expansion, refresh/retry, settings, and reopening the menu-bar window.
 
-The September 2026 refactor passed direct Swift compilation and temporary fixture-based regression checks, including HTTP errors, malformed payloads, CDN date mismatch, cache expiry, and preservation of scores/leaders during overlapping work. Offscreen AppKit renders were reviewed in light and dark mode. The local `xcodebuild` installation failed before compilation with a missing `DVTDownloads` symbol in `IDESimulatorFoundation`; direct `swiftc` compilation and linking succeeded. The live NBA CDN returned HTTP 403 in this environment, so real live-game updates still need verification on a working feed. Desktop UI automation also timed out; interactive keyboard/window behavior needs a manual check.
+The October 2026 security pass completed all 27 standalone checks, Debug and universal Release builds, a Developer ID export, and verification of the app and Sparkle helper signatures. A live request loaded five games and a box score through the bounded client. Settings renders were reviewed in light and dark mode. Temporary signed fixtures verified that Sparkle discovers an update and rejects a modified feed; the release verifier also rejected a modified ZIP and assets signed with the wrong key. Public release verification still includes Apple's notarization acceptance and a complete update between two published builds; follow the release guide for those checks. Interactive keyboard and window behavior remains a manual check.
 
 The October 2026 date-grouping fix passed `xcodebuild` and all 21 standalone regression checks. Native HTTP checks against the preseason feeds placed the live Minnesota–Indiana game and the other four morning games under Today in Hong Kong, with completed games under Yesterday. A full 15-second polling interval refreshed Today, and an injected connection failure retained scores and leaders before a manual refresh recovered. Real live-to-final transitions and interactive keyboard/window behavior still need a manual check.

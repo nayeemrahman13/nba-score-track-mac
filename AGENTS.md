@@ -12,10 +12,12 @@ only the Xcode project and docs.
   - `Models/Game.swift` — scoreboard/box-score models.
   - `Services/` — `NBAClient` (HTTP, decoding, CDN date validation, dated stats
     fallback), `NBAService` (published UI state, refresh coalescing), `BoxScoreCache`
-    (final-score cache), `LaunchAtLoginManager` (login item).
+    (final-score cache), `LaunchAtLoginManager` (login item), `UpdateManager` (Sparkle).
   - `Views/` — `GameListView`, `GameRowView`, `LeadersView`, `SettingsView`.
 - `NBAScoreTracker/Verification/ReviewRegressions.swift` — standalone regression
   executable, not an app test target.
+- `scripts/release.sh`, `scripts/verify_release.py` — signed release preparation and verification.
+- `docs/releases.md` — GitHub Releases, notarization, and Sparkle signing instructions.
 
 ## Commands
 
@@ -43,6 +45,7 @@ These checks cover wake/day rollover during an in-flight request, refresh coales
 player identity through ranking and cache reloads, duplicate/missing IDs, legacy
 cache decoding, and tolerant scoreboard decoding that drops malformed game rows
 while keeping their siblings.
+They also cover network payload and field limits, disk cache expiry cleanup, entry and byte budgets, and invalid cache paths.
 
 There is no test suite and no lint script configured. Don't invent either speculatively.
 
@@ -85,3 +88,7 @@ exists there — `cdn.nba.com`'s `_10` object is stale, frozen at a 2020 Finals 
 - For refresh changes, run the regression executable and manually verify concurrent
   refreshes, offline recovery, midnight rollover, and live-to-final cache transitions
   (README's Verification section has the full checklist).
+- Sparkle is pinned to 2.10.0. Keep the sandbox and its two Sparkle Mach lookup exceptions.
+  Archive and export through Xcode to sign nested helpers. Never ship `get-task-allow`
+  or disable library validation. The Sparkle private key stays in the login keychain;
+  only its public key belongs in `Updates.xcconfig`. Follow `docs/releases.md`.

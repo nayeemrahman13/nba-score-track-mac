@@ -1,0 +1,2 @@
+// Sparkle's public verification key. The private key stays in the login keychain.
+SPARKLE_PUBLIC_ED_KEY = 7Fg5QH+IY3J9eRoBrEhPcdSwB962GV09encj2UFPiPE=
