@@ -54,6 +54,7 @@ private actor EnrichmentNBA: NBAFetching {
     private var blockedGameId: String?
     private var blockedContinuation: CheckedContinuation<Void, Never>?
     private var startedContinuation: CheckedContinuation<Void, Never>?
+    private(set) var leaderCalls = 0
 
     func setGames(_ games: [Game], for date: String) { gamesByDate[date] = games }
     func setBox(_ box: CachedBoxScore, for gameId: String) { boxesByGame[gameId] = box }
@@ -75,6 +76,7 @@ private actor EnrichmentNBA: NBAFetching {
     }
 
     func leaders(for game: Game) async throws -> CachedBoxScore {
+        leaderCalls += 1
         if game.id == blockedGameId {
             await withCheckedContinuation { continuation in
                 blockedContinuation = continuation
@@ -320,7 +322,47 @@ private struct ReviewRegressions {
         let fallbackFetched = try await api.scoreboard(for: today)
         precondition(fallbackFetched.map(\.id) == ["0022600012"], "The dated-stats fallback must drop malformed rows too")
         print("PASS: the dated-stats fallback path drops malformed rows while their siblings survive")
+
+        FixtureProtocol.bodies = [:]
+        FixtureProtocol.body = """
+        {"game": {"gameId": "\(game.id)", "gameStatus": 3, "gameStatusText": "Final  ", "period": 4, "gameClock": "PT00M00.00S",
+          "homeTeam": {"teamTricode": "NYK", "score": 100, "players": [{"personId": 1, "name": "A"}]},
+          "awayTeam": {"teamTricode": "BOS", "score": 90, "players": [{"personId": 2, "name": "B"}]}}}
+        """
+        let finalBox = try await api.leaders(for: game)
+        precondition(finalBox.progress == GameProgress(status: .finished, statusText: "Final", period: 4,
+                                                       gameClock: "PT00M00.00S", homeScore: 100, awayScore: 90))
+        precondition(GameProgress.seconds(fromClock: "PT05M42.50S") == 342.5 && GameProgress.seconds(fromClock: "") == nil)
+        print("PASS: box scores carry their own status, period, clock and score")
+
+        // The CDN live scoreboard omits national TV; it is filled from the stats
+        // feed in the background and never blocks or fails the CDN result.
+        let broadcastAPI = NBAClient(session: URLSession(configuration: config), cache: cache)
+        FixtureProtocol.bodies = [
+            "cdn": """
+            {"scoreboard": {"gameDate": "\(currentLeagueDate)", "games": [
+              {"gameId": "0022600030", "gameStatus": 2, "gameStatusText": "Q3        ", "period": 3, "gameTimeUTC": "\(currentTipoff)",
+               "homeTeam": {"teamTricode": "OKC", "score": 71}, "awayTeam": {"teamTricode": "DEN", "score": 68}}]}}
+            """,
+            currentLeagueDate: """
+            {"scoreboard": {"gameDate": "\(currentLeagueDate)", "games": [
+              {"gameId": "0022600030", "gameStatus": 2, "gameStatusText": "Q3", "period": 3, "gameTimeUTC": "\(currentTipoff)",
+               "homeTeam": {"teamTricode": "OKC", "score": 71}, "awayTeam": {"teamTricode": "DEN", "score": 68},
+               "broadcasters": {"nationalBroadcasters": [{"broadcastDisplay": "ESPN"}]}}]}}
+            """
+        ]
+        FixtureProtocol.body = scheduleBody(date: "", games: [])
+        var broadcastGames: [Game] = []
+        for _ in 0..<100 {
+            broadcastGames = try await broadcastAPI.scoreboard(for: today)
+            if broadcastGames.first?.broadcaster == "ESPN" { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        precondition(broadcastGames.map(\.id) == ["0022600030"] && broadcastGames[0].broadcaster == "ESPN")
+        precondition(broadcastGames[0].statusText == "Q3", "Padded feed status text must be trimmed")
+        print("PASS: Today's CDN games get national broadcasters from the stats feed and trimmed status text")
         try await verifySecurityBoundaries()
+        try await verifyBoxScoreProgress()
     }
 
     @MainActor
@@ -492,6 +534,71 @@ private struct ReviewRegressions {
         let finalGames = enrichService.games[enrichDate] ?? []
         precondition(finalGames.count == 2 && finalGames.allSatisfy { !$0.isLoadingLeaders && $0.homeTeam.leaders.first?.points == 25 })
         print("PASS: leader enrichment tracks loading state and runs a queued follow-up pass when games turn live mid-batch")
+    }
+
+    /// Reproduces a real feed lag: both scoreboards stayed at 4th Qtr 0:44 for
+    /// minutes while the box score reached Final.
+    @MainActor
+    private static func verifyBoxScoreProgress() async throws {
+        func waitUntil(_ message: String, _ condition: () -> Bool) async throws {
+            for _ in 0..<200 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
+            precondition(condition(), message)
+        }
+        let date = "2026-10-19"
+        let client = EnrichmentNBA()
+        let service = NBAService(client: client, now: { ScoreDate.date(for: date)! })
+        let id = "0022600201"
+        func scoreboardGame(_ status: Game.GameStatus, _ text: String, clock: String, home: Int, away: Int) -> Game {
+            Game(id: id, status: status, statusText: text, broadcaster: "",
+                 homeTeam: Team(tricode: "PHI", score: home, leaders: []), awayTeam: Team(tricode: "CLE", score: away, leaders: []),
+                 period: 4, gameTimeUTC: "2026-10-19T23:00:00Z", gameClock: clock)
+        }
+        func box(_ progress: GameProgress, points: Int) -> CachedBoxScore {
+            let player = CachedPlayer(id: "nba:\(points)", name: "P\(points)", nameI: "", position: "", points: points, rebounds: 0,
+                                      assists: 0, steals: 0, blocks: 0, minutes: "", fgm: 0, fga: 0, threePm: 0, threePa: 0, ftm: 0, fta: 0)
+            let team = CachedTeamBoxScore(tricode: "PHI", players: [player])
+            return CachedBoxScore(gameId: id, homeTeam: team, awayTeam: team,
+                                  homeScore: progress.homeScore, awayScore: progress.awayScore, progress: progress)
+        }
+        var shown: Game? { service.games[date]?.first }
+        let staleRow = scoreboardGame(.live, "4th Qtr", clock: "PT00M44.00S", home: 110, away: 102)
+        let final = GameProgress(status: .finished, statusText: "Final", period: 4, gameClock: "PT00M00.00S", homeScore: 114, awayScore: 106)
+        let staleLive = GameProgress(status: .live, statusText: "Q4 :44.0", period: 4, gameClock: "PT00M44.00S", homeScore: 110, awayScore: 102)
+
+        await client.setGames([staleRow], for: date)
+        await client.setBox(box(final, points: 25), for: id)
+        await service.refreshAll()
+        try await waitUntil("A box score further along must supply score and status") {
+            shown?.status == .finished && shown?.homeTeam.score == 114 && shown?.homeTeam.leaders.first?.points == 25
+        }
+        precondition(shown?.statusText == "Final" && shown?.awayTeam.score == 106 && shown?.isLoadingLeaders == false)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        await client.block(gameId: id)
+        await service.refreshAll()
+        await client.waitForLeaderFetch()
+        precondition(shown?.status == .finished && shown?.homeTeam.score == 114, "A lagging scoreboard refresh must not move the score backward")
+        await client.releaseLeaderFetch()
+        let calls = await client.leaderCalls
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        await client.setBox(box(staleLive, points: 1), for: id)
+        await service.refreshAll()
+        for _ in 0..<200 where await client.leaderCalls == calls { try await Task.sleep(nanoseconds: 10_000_000) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        precondition(shown?.status == .finished && shown?.homeTeam.score == 114 && shown?.homeTeam.leaders.first?.points == 25,
+                     "A box score behind the displayed state must not apply its score or leaders")
+        print("PASS: a box score further along than a lagging scoreboard supplies the score and never moves it backward")
+
+        await client.setGames([scoreboardGame(.finished, "Final", clock: "PT00M00.00S", home: 115, away: 106)], for: date)
+        await client.setBox(box(final, points: 25), for: id)
+        await service.refreshAll()
+        try await waitUntil("Once both sources are final, the scoreboard's official result wins") {
+            shown?.status == .finished && shown?.homeTeam.score == 115
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        precondition(shown?.homeTeam.score == 115)
+        print("PASS: once both sources are final, the scoreboard's official result wins")
     }
 
     @MainActor

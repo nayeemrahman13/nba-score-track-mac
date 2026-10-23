@@ -41,7 +41,8 @@ xcrun swiftc -parse-as-library -module-cache-path /tmp/nba-swift-module-cache \
 /tmp/nba-review-regressions
 ```
 
-These checks cover wake/day rollover during an in-flight request, refresh coalescing,
+These checks cover box-score progress overriding a lagging scoreboard without moving
+backward, Today's broadcaster fill, wake/day rollover during an in-flight request, refresh coalescing,
 player identity through ranking and cache reloads, duplicate/missing IDs, legacy
 cache decoding, and tolerant scoreboard decoding that drops malformed game rows
 while keeping their siblings.
@@ -58,8 +59,15 @@ groups games by UTC tipoff within the local day's midnight boundaries. Adjacent
 local days share in-flight league requests; a local day updates only when all its
 overlapping schedules succeed. Rows without a usable UTC tipoff are malformed.
 `NBAService` coalesces overlapping refreshes, publishes dates independently,
-and on failure retains the last successful games; box-score enrichment cannot overwrite
-scoreboard scores or apply live details after a game becomes final. While visible,
+and on failure retains the last successful games. The scoreboard decides which games
+exist and when they tip off; for score, status, period and clock, whichever of the
+scoreboard and the box score is further into the game wins (the scoreboard feeds can lag
+the box score by minutes, even staying live after the final buzzer). The accepted box-score
+state is reapplied while the scoreboard lags, so scores never move backward; a box score
+behind the displayed state (such as live details after final) is never applied; once both
+are final, the scoreboard's result wins. The CDN live scoreboard omits national TV, so
+`NBAClient` fills it in the background from the stats feed for that league date (at most
+every 30 minutes, never blocking scores). While visible,
 polling waits 15 seconds between completed refreshes with live games (live takes
 precedence over the error-state interval), 60 seconds with no live games or errors,
 or 30 seconds while any date is in the error state and none are live — the loop's

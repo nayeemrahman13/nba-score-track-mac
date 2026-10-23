@@ -37,6 +37,7 @@ struct CDNGame: Codable {
     let homeTeam: CDNTeam
     let awayTeam: CDNTeam
     let broadcasters: CDNBroadcasters?
+    var gameClock: String? = nil
 }
 
 struct CDNTeam: Codable {
@@ -73,6 +74,7 @@ struct APIGame: Codable {
     let homeTeam: APITeam
     let awayTeam: APITeam
     let broadcasters: Broadcasters?
+    var gameClock: String? = nil
 }
 
 struct APITeam: Codable {
@@ -97,6 +99,9 @@ struct BoxscoreResponse: Codable {
 struct BoxscoreGame: Codable {
     let gameId: String?
     let gameStatus: Int?
+    let gameStatusText: String?
+    let period: Int?
+    let gameClock: String?
     let homeTeam: BoxscoreTeam?
     let awayTeam: BoxscoreTeam?
 }
@@ -133,12 +138,13 @@ struct PlayerStatistics: Codable {
 // MARK: - App Models
 struct Game: Identifiable {
     let id: String
-    let status: GameStatus
-    let statusText: String
-    let broadcaster: String
+    var status: GameStatus
+    var statusText: String
+    var broadcaster: String
     var homeTeam: Team
     var awayTeam: Team
-    let period: Int
+    var period: Int
+    var gameClock: String
     let gameTimeUTC: String
     let startDate: Date?
     var isLoadingLeaders = false
@@ -153,7 +159,8 @@ struct Game: Identifiable {
         period: Int,
         gameTimeUTC: String,
         startDate: Date? = nil,
-        isLoadingLeaders: Bool = false
+        isLoadingLeaders: Bool = false,
+        gameClock: String = ""
     ) {
         self.id = id
         self.status = status
@@ -162,15 +169,64 @@ struct Game: Identifiable {
         self.homeTeam = homeTeam
         self.awayTeam = awayTeam
         self.period = period
+        self.gameClock = gameClock
         self.gameTimeUTC = gameTimeUTC
         self.startDate = startDate ?? ScoreDate.tipoffDate(from: gameTimeUTC)
         self.isLoadingLeaders = isLoadingLeaders
     }
     
-    enum GameStatus: Int {
+    enum GameStatus: Int, Codable {
         case upcoming = 1
         case live = 2
         case finished = 3
+    }
+
+    /// Positive when `progress` is further into the game than this row, negative
+    /// when it is behind, zero when they describe the same moment.
+    func compareProgress(_ progress: GameProgress) -> Int {
+        if progress.status != status { return progress.status.rawValue > status.rawValue ? 1 : -1 }
+        if progress.period != period { return progress.period > period ? 1 : -1 }
+        if let mine = GameProgress.seconds(fromClock: gameClock),
+           let theirs = GameProgress.seconds(fromClock: progress.gameClock), mine != theirs {
+            return theirs < mine ? 1 : -1
+        }
+        // A final row with the same period and clock is the official result;
+        // a points difference there is a correction, not progress.
+        guard status != .finished else { return 0 }
+        let mine = homeTeam.score + awayTeam.score
+        let theirs = progress.homeScore + progress.awayScore
+        return theirs == mine ? 0 : theirs > mine ? 1 : -1
+    }
+
+    mutating func apply(_ progress: GameProgress) {
+        status = progress.status
+        statusText = progress.statusText.isEmpty ? statusText : progress.statusText
+        period = progress.period
+        gameClock = progress.gameClock
+        homeTeam = Team(tricode: homeTeam.tricode, score: progress.homeScore, leaders: homeTeam.leaders)
+        awayTeam = Team(tricode: awayTeam.tricode, score: progress.awayScore, leaders: awayTeam.leaders)
+    }
+}
+
+/// Game state from a box score. The scoreboard feeds can lag the box score by
+/// minutes (including staying live after the final buzzer), so a box score that
+/// is further along supplies the displayed score, status and clock.
+struct GameProgress: Codable, Equatable {
+    let status: Game.GameStatus
+    let statusText: String
+    let period: Int
+    let gameClock: String
+    let homeScore: Int
+    let awayScore: Int
+
+    /// Seconds left in the period from an ISO-8601 clock such as "PT05M42.00S".
+    static func seconds(fromClock clock: String) -> Double? {
+        let value = clock.trimmingCharacters(in: .whitespaces)
+        guard value.hasPrefix("PT"), value.hasSuffix("S"), let m = value.firstIndex(of: "M") else { return nil }
+        guard let minutes = Double(value[value.index(value.startIndex, offsetBy: 2)..<m]),
+              let seconds = Double(value[value.index(after: m)..<value.index(before: value.endIndex)]),
+              minutes >= 0, seconds >= 0 else { return nil }
+        return minutes * 60 + seconds
     }
 }
 

@@ -20,6 +20,8 @@ final class NBAService: ObservableObject {
     private var leaderTasks: [String: Task<Void, Never>] = [:]
     private var needsLeaderEnrichment: Set<String> = []
     private var revisions: [String: UUID] = [:]
+    // Latest accepted box-score state per game, reapplied while the scoreboard lags.
+    private var progressByGame: [String: GameProgress] = [:]
     private var failureCounts: [String: Int] = [:]
     private var isPopoverVisible = false
     private var selectedOffset = 0
@@ -176,6 +178,13 @@ final class NBAService: ObservableObject {
                     game.homeTeam.leaders = old.homeTeam.leaders
                     game.awayTeam.leaders = old.awayTeam.leaders
                 }
+                if let progress = progressByGame[game.id] {
+                    if game.compareProgress(progress) > 0 {
+                        game.apply(progress)
+                    } else {
+                        progressByGame.removeValue(forKey: game.id)
+                    }
+                }
                 game.isLoadingLeaders = game.status != .upcoming
                     && game.homeTeam.leaders.isEmpty
                     && game.awayTeam.leaders.isEmpty
@@ -186,6 +195,8 @@ final class NBAService: ObservableObject {
                 if a.gameTimeUTC != b.gameTimeUTC { return a.gameTimeUTC < b.gameTimeUTC }
                 return a.id < b.id
             }
+            let tracked = Set(games.values.joined().map(\.id))
+            progressByGame = progressByGame.filter { tracked.contains($0.key) }
             updatedAt[date] = now()
             errors.removeValue(forKey: date)
             failureCounts.removeValue(forKey: date)
@@ -202,7 +213,11 @@ final class NBAService: ObservableObject {
         }
         let revision = UUID()
         revisions[date] = revision
-        let candidates = (games[date] ?? []).filter { $0.status != .upcoming }
+        // A scoreboard that still says upcoming after tipoff may be lagging the box score.
+        let current = now()
+        let candidates = (games[date] ?? []).filter { game in
+            game.status != .upcoming || game.startDate.map { $0 <= current } == true
+        }
         guard !candidates.isEmpty else {
             needsLeaderEnrichment.remove(date)
             return
@@ -221,12 +236,28 @@ final class NBAService: ObservableObject {
                     if let self, self.revisions[date] == revision,
                        let index = self.games[date]?.firstIndex(where: { $0.id == id }),
                        let requested = candidates.first(where: { $0.id == id }),
-                       self.games[date]?[index].status == requested.status {
-                        if let box {
-                            self.games[date]?[index].homeTeam.leaders = box.homeTeam.leaders
-                            self.games[date]?[index].awayTeam.leaders = box.awayTeam.leaders
+                       var game = self.games[date]?[index] {
+                        // A box score behind the displayed state (for example, live
+                        // details after the game is final) is never applied.
+                        let accepted: Bool
+                        if let progress = box?.progress {
+                            let order = game.compareProgress(progress)
+                            if order > 0 {
+                                game.apply(progress)
+                                self.progressByGame[id] = progress
+                            }
+                            accepted = order >= 0
+                        } else {
+                            accepted = game.status == requested.status
                         }
-                        self.games[date]?[index].isLoadingLeaders = false
+                        if accepted {
+                            if let box, game.status != .upcoming {
+                                game.homeTeam.leaders = box.homeTeam.leaders
+                                game.awayTeam.leaders = box.awayTeam.leaders
+                            }
+                            game.isLoadingLeaders = false
+                            self.games[date]?[index] = game
+                        }
                     }
                     if let game = iterator.next() { enqueue(game) }
                 }

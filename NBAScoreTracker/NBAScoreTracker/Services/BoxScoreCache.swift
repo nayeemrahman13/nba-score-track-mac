@@ -131,14 +131,18 @@ struct CachedBoxScore: Codable {
     let homeScore: Int?
     let awayScore: Int?
     let cachedAt: Date
-    
-    init(gameId: String, homeTeam: CachedTeamBoxScore, awayTeam: CachedTeamBoxScore, homeScore: Int? = nil, awayScore: Int? = nil) {
+    /// Absent in cache files written before box scores supplied game state.
+    let progress: GameProgress?
+
+    init(gameId: String, homeTeam: CachedTeamBoxScore, awayTeam: CachedTeamBoxScore,
+         homeScore: Int? = nil, awayScore: Int? = nil, progress: GameProgress? = nil) {
         self.gameId = gameId
         self.homeTeam = homeTeam
         self.awayTeam = awayTeam
         self.homeScore = homeScore
         self.awayScore = awayScore
         self.cachedAt = Date()
+        self.progress = progress
     }
 }
 

@@ -32,6 +32,7 @@ protocol ScoreboardGame {
     var gameStatus: Int { get }
     var gameStatusText: String { get }
     var period: Int { get }
+    var gameClock: String? { get }
     var gameTimeUTC: String? { get }
     var homeTricode: String? { get }
     var homeScore: Int? { get }
@@ -67,6 +68,10 @@ actor NBAClient: NBAFetching {
     private let cache: BoxScoreCache
     private let now: () -> Date
     private var scoreboardTasks: [LeagueDate: Task<[Game], Error>] = [:]
+    // The CDN live scoreboard omits national TV, which the dated stats feed has.
+    // Learned per game ID so every tab shows the same broadcaster badges.
+    private var broadcasters: [String: String] = [:]
+    private var broadcasterAttempts: [LeagueDate: Date] = [:]
     // Debug-only WNBA override (NBA_LEAGUE=10, see AGENTS.md): repoints the whole
     // live pipeline at the WNBA's CDN for testing before the NBA season starts.
     // Release builds never read the environment and cannot enter this mode.
@@ -140,12 +145,26 @@ actor NBAClient: NBAFetching {
                 )
                 guard response.scoreboard.gameDate == date.key else { throw NBAError.wrongDate }
                 // Empty is a successful response, not a reason to hit another API.
-                return try Self.decodeGames(response.scoreboard.games)
+                let games = try Self.decodeGames(response.scoreboard.games)
+                if games.contains(where: { $0.broadcaster.isEmpty && broadcasters[$0.id] == nil }) {
+                    requestBroadcasters(for: date)
+                }
+                return games.map { game in
+                    var game = game
+                    if game.broadcaster.isEmpty, let known = broadcasters[game.id] { game.broadcaster = known }
+                    return game
+                }
             } catch {
                 try Task.checkCancellation()
                 // The dated endpoint is also needed around the NBA's day rollover.
             }
         }
+        let games = try await loadStatsScoreboard(for: date)
+        remember(broadcastersFrom: games)
+        return games
+    }
+
+    private func loadStatsScoreboard(for date: LeagueDate) async throws -> [Game] {
         let response: ScoreboardResponse = try await load(
             usesWNBAEndpoints
                 ? "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date.key)&LeagueID=10"
@@ -153,6 +172,26 @@ actor NBAClient: NBAFetching {
             using: session
         )
         return try Self.decodeGames(response.scoreboard.games)
+    }
+
+    /// Best-effort and off the scoreboard path: stats.nba.com is slower and more
+    /// often blocked than the CDN, so it must never delay or fail live scores.
+    /// Results apply from the next refresh onward.
+    private func requestBroadcasters(for date: LeagueDate) {
+        let current = now()
+        if let last = broadcasterAttempts[date], current.timeIntervalSince(last) >= 0,
+           current.timeIntervalSince(last) < 1_800 { return }
+        broadcasterAttempts = broadcasterAttempts.filter { abs(current.timeIntervalSince($0.value)) < 86_400 }
+        broadcasterAttempts[date] = current
+        Task {
+            guard let games = try? await loadStatsScoreboard(for: date) else { return }
+            remember(broadcastersFrom: games)
+        }
+    }
+
+    private func remember(broadcastersFrom games: [Game]) {
+        if broadcasters.count > 4 * NBAFeedLimits.games { broadcasters.removeAll() }
+        for game in games where !game.broadcaster.isEmpty { broadcasters[game.id] = game.broadcaster }
     }
 
     func leaders(for game: Game) async throws -> CachedBoxScore {
@@ -176,7 +215,8 @@ actor NBAClient: NBAFetching {
             gameId: game.id,
             homeTeam: cachedTeam(tricode: home.teamTricode ?? game.homeTeam.tricode, players: homePlayers),
             awayTeam: cachedTeam(tricode: away.teamTricode ?? game.awayTeam.tricode, players: awayPlayers),
-            homeScore: home.score, awayScore: away.score
+            homeScore: home.score, awayScore: away.score,
+            progress: Self.progress(from: box)
         )
         // Never promote an in-progress box score into the final-game cache.
         if game.status == .finished, box.gameStatus == 3,
@@ -333,12 +373,28 @@ actor NBAClient: NBAFetching {
               let tipoff = ScoreDate.tipoffDate(from: gameTimeUTC) else { throw NBAError.invalidResponse }
         if state != .upcoming && (row.homeScore == nil || row.awayScore == nil) { throw NBAError.invalidResponse }
         let channel = row.nationalBroadcaster?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Game(id: row.gameId, status: state, statusText: row.gameStatusText,
+        // Both feeds pad status text with trailing spaces.
+        return Game(id: row.gameId, status: state, statusText: row.gameStatusText.trimmingCharacters(in: .whitespacesAndNewlines),
                     broadcaster: channel?.isEmpty == false ? (channel!.uppercased().contains("AMAZON") ? "Prime Video" : channel!) : "",
                     homeTeam: Team(tricode: home, score: row.homeScore ?? 0, leaders: []),
                     awayTeam: Team(tricode: away, score: row.awayScore ?? 0, leaders: []),
                     period: row.period, gameTimeUTC: gameTimeUTC, startDate: tipoff,
-                    isLoadingLeaders: state != .upcoming)
+                    isLoadingLeaders: state != .upcoming,
+                    gameClock: row.gameClock.flatMap { NBAFeedLimits.isText($0, maximumBytes: 32) ? $0 : nil } ?? "")
+    }
+
+    /// Nil when the box score lacks a trustworthy game state; its leaders may
+    /// still be used under the scoreboard's status.
+    static func progress(from box: BoxscoreGame) -> GameProgress? {
+        guard let status = box.gameStatus.flatMap(Game.GameStatus.init(rawValue:)),
+              let period = box.period, (0...20).contains(period),
+              let homeScore = box.homeTeam?.score, let awayScore = box.awayTeam?.score,
+              (0...500).contains(homeScore), (0...500).contains(awayScore),
+              NBAFeedLimits.isText(box.gameStatusText), NBAFeedLimits.isText(box.gameClock, maximumBytes: 32) else { return nil }
+        return GameProgress(status: status,
+                            statusText: box.gameStatusText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                            period: period, gameClock: box.gameClock ?? "",
+                            homeScore: homeScore, awayScore: awayScore)
     }
 
     private static func hasPlayed(_ minutes: String?) -> Bool {
