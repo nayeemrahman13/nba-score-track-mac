@@ -141,16 +141,26 @@ final class NBAService: ObservableObject {
         let client = self.client
         await withTaskGroup(of: (String, Result<[Game], Error>).self) { group in
             for date in requested {
-                group.addTask {
-                    do { return (date, .success(try await client.scoreboard(for: date))) }
-                    catch { return (date, .failure(error)) }
-                }
+                group.addTask { await Self.fetchScoreboard(client, date) }
             }
             for await (date, result) in group {
                 guard !Task.isCancelled else { return }
                 receive(result, for: date)
             }
         }
+    }
+
+    // Child tasks must start from nonisolated functions. Closures written inside
+    // these @MainActor task-group bodies crashed optimized builds on macOS 27
+    // (Swift 6.4): a child completed after its group's storage had been freed
+    // (EXC_BAD_ACCESS in swift::TaskGroup::offer).
+    nonisolated private static func fetchScoreboard(_ client: any NBAFetching, _ date: String) async -> (String, Result<[Game], Error>) {
+        do { return (date, .success(try await client.scoreboard(for: date))) }
+        catch { return (date, .failure(error)) }
+    }
+
+    nonisolated private static func fetchLeaders(_ client: any NBAFetching, _ game: Game) async -> (String, CachedBoxScore?) {
+        (game.id, try? await client.leaders(for: game))
     }
 
     private var attemptedAt: [String: Date] = [:]
@@ -228,7 +238,7 @@ final class NBAService: ObservableObject {
             await withTaskGroup(of: (String, CachedBoxScore?).self) { group in
                 var iterator = candidates.makeIterator()
                 func enqueue(_ game: Game) {
-                    group.addTask { (game.id, try? await client.leaders(for: game)) }
+                    group.addTask { await Self.fetchLeaders(client, game) }
                 }
                 for _ in 0..<3 { if let game = iterator.next() { enqueue(game) } }
                 for await (id, box) in group {
