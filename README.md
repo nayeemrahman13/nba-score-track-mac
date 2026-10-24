@@ -22,11 +22,11 @@ xcodebuild -project NBAScoreTracker/NBAScoreTracker.xcodeproj \
 
 Network responses have a 2 MiB limit enforced during download, including responses without a trustworthy `Content-Length`. Feed validation bounds game IDs, team codes, text, and collection sizes. The disk cache removes expired files and keeps at most 100 entries totaling 16 MiB, with a 256 KiB limit per entry. Maintenance runs on writes and at most every five minutes on reads.
 
-Settings opens in a retained, independent window rather than a sheet on the transient menu-bar panel, so login-item approval and focus changes cannot dismiss it. Login-item status is refreshed when the app becomes active again.
+Settings opens inline within the menu-bar window rather than as a modal sheet or separate window, keeping navigation in one place. Login-item status is refreshed when Settings appears and when the app becomes active again.
 
-Upcoming shows the next three calendar days starting tomorrow, grouped under date headings and ordered by tipoff within each day. All three schedules are prefetched; each keeps its own loading, empty, error, and retained-data state. The footer reports partial loading until all three dates have succeeded, and uses the oldest update time for the group. Yesterday and Today remain single-day views.
+A five-day strip shows Yesterday, Today, and the next three dated days, one day at a time. All five schedules are prefetched; each keeps its own loading, empty, error, and retained-data state. Live dots mark days with games in progress. Use ⌘← and ⌘→ to change days. The footer reports the selected day's update time and labels stale scores explicitly.
 
-The UI distinguishes initial loading, a successful empty schedule, initial failure, and failure with retained scores. Refresh is available through the toolbar or ⌘R. Game rows are native keyboard-accessible buttons, score updates do not animate, and press feedback respects Reduce Motion. Tipoff times use the local timezone. Missing broadcast information is omitted rather than guessed.
+The UI distinguishes initial loading, a successful empty schedule, initial failure, and failure with retained scores. Refresh is available through the toolbar or ⌘R. Live and final game rows are native keyboard-accessible buttons; upcoming rows have no interactive hover highlight. Expanded leaders stay open when a game moves between sections. Day selection and expansion use short, non-bouncing springs, disabled under Reduce Motion; score updates do not animate. Tipoff times use the local timezone. Missing broadcast information is omitted rather than guessed.
 
 ## Updates and public releases
 
@@ -49,7 +49,7 @@ xcrun swiftc -parse-as-library -module-cache-path /tmp/nba-swift-module-cache \
 
 These checks cover a box score that is further along than a lagging scoreboard (including never moving a score backward and the official final winning), Today's broadcaster fill and status trimming, local date grouping in Hong Kong and Pacific time, overlapping schedule failures and recovery, timezone changes, DST boundaries, wake/day rollover during an in-flight request, normal refresh coalescing, player identity through ranking and cache reloads, duplicate/missing IDs, legacy cache decoding, the three-day schedule across year boundaries with partial failures, and tolerant scoreboard decoding that drops malformed game rows while keeping their siblings. NBA player IDs are assigned before ranking and persisted in the cache; missing IDs use roster-scoped fallbacks, and old cache records use unique row slots until refreshed.
 
-The security checks also exercise oversized HTTP responses with truthful and dishonest length headers, field and collection limits, cache expiry cleanup, disk budgets, oversized cache files, and invalid cache paths.
+Day-strip checks verify independent refresh selection for all three future days. The security checks also exercise oversized HTTP responses with truthful and dishonest length headers, field and collection limits, cache expiry cleanup, disk budgets, oversized cache files, and invalid cache paths.
 
 For refresh changes, verify concurrent refreshes, offline recovery, successful empty schedules, midnight rollover, live-to-final cache transitions, and a slow box score alongside a faster scoreboard. Inspect light/dark appearance, keyboard expansion, refresh/retry, settings, and reopening the menu-bar window.
 

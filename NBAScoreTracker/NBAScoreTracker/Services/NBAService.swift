@@ -111,8 +111,7 @@ final class NBAService: ObservableObject {
         let now = now()
         day = ScoreDate.key(now: now)
         let dates = ScoreDate.trackedOffsets.map { ScoreDate.key(offset: $0, now: now) }
-        let selectedDates = Set((selectedOffset == 1 ? ScoreDate.upcomingOffsets : [selectedOffset])
-            .map { ScoreDate.key(offset: $0, now: now) })
+        let selectedDate = ScoreDate.key(offset: selectedOffset, now: now)
         games = games.filter { dates.contains($0.key) }
         updatedAt = updatedAt.filter { dates.contains($0.key) }
         errors = errors.filter { dates.contains($0.key) }
@@ -124,7 +123,7 @@ final class NBAService: ObservableObject {
         }
         let requested = dates.filter { date in
             if force { return true }
-            let normalInterval: TimeInterval = date == day || selectedDates.contains(date) || games[date]?.contains(where: { $0.status == .live }) == true
+            let normalInterval: TimeInterval = date == day || date == selectedDate || games[date]?.contains(where: { $0.status == .live }) == true
                 ? pollingInterval : 300
             let count = failureCounts[date] ?? 0
             let interval = count > 0 ? min(300, 30 * pow(2, Double(min(count - 1, 4)))) : normalInterval

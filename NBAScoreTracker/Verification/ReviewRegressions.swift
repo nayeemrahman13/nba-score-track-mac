@@ -165,6 +165,23 @@ private struct ReviewRegressions {
         precondition(schedule.games["2026-12-31"]?.count == 1 && schedule.games["2027-01-01"]?.isEmpty == true)
         print("PASS: three-day Upcoming horizon crosses year boundaries and preserves each day's empty/error/cached state")
 
+        for offset in [1, 2, 3] {
+            var clock = reference
+            let dayClient = ScheduleNBA(emptyDate: "")
+            let dayService = NBAService(client: dayClient, now: { clock })
+            dayService.setPopoverVisible(true)
+            await dayService.refreshAll()
+            let initialRequests = await dayClient.requested.count
+            clock = clock.addingTimeInterval(61)
+            dayService.selectDate(offset: offset)
+            await dayService.refreshAll(force: false)
+            let refreshed = await dayClient.requested
+            precondition(Set(refreshed.dropFirst(initialRequests)) == Set([
+                ScoreDate.key(now: clock), ScoreDate.key(offset: offset, now: clock)
+            ]), "Only Today and the selected future day should bypass the five-minute interval")
+        }
+        print("PASS: each future day refreshes independently when selected in the day strip")
+
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("nba-review-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let cache = BoxScoreCache(directory: directory)

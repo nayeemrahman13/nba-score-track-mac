@@ -5,31 +5,47 @@ struct SettingsView: View {
     @ObservedObject var launchManager = LaunchAtLoginManager.shared
     @ObservedObject private var updateManager = UpdateManager.shared
     var onClose: () -> Void = {}
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
-            HStack {
-                Text("Settings")
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Button {
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Button(action: onClose) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Scores")
+                            .font(.subheadline)
+                    }
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("Close settings")
+                .accessibilityLabel("Back to scores")
                 .keyboardShortcut(.cancelAction)
+                .help("Back to scores (Esc)")
+
+                Spacer()
+
+                Text("Settings")
+                    .font(.headline)
+
+                Spacer()
+
+                // Balance leading button width so the title stays visually centered.
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Scores")
+                        .font(.subheadline)
+                }
+                .opacity(0)
+                .accessibilityHidden(true)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-            
+            .padding(14)
+
             Divider()
-            
+
             // Settings List
             VStack(spacing: 0) {
                 settingRow(
@@ -41,10 +57,14 @@ struct SettingsView: View {
                         get: { launchManager.isEnabled },
                         set: { launchManager.setEnabled($0) }
                     ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
+                    .toggleStyle(.switch)
+                    .labelsHidden()
                 }
-                settingRow(icon: "arrow.clockwise", title: "Check for Updates", subtitle: "Look for updates automatically") {
+                settingRow(
+                    icon: "arrow.clockwise",
+                    title: "Check for Updates",
+                    subtitle: "Look for updates automatically"
+                ) {
                     Toggle("Check for updates automatically", isOn: Binding(
                         get: { updateManager.automaticallyChecksForUpdates },
                         set: { updateManager.setAutomaticChecks($0) }
@@ -52,7 +72,11 @@ struct SettingsView: View {
                     .toggleStyle(.switch)
                     .labelsHidden()
                 }
-                settingRow(icon: "arrow.down.circle", title: "Install Updates", subtitle: "Download and install when you quit") {
+                settingRow(
+                    icon: "arrow.down.circle",
+                    title: "Install Updates",
+                    subtitle: "Download and install when you quit"
+                ) {
                     Toggle("Download and install updates automatically", isOn: Binding(
                         get: { updateManager.automaticallyDownloadsUpdates },
                         set: { updateManager.setAutomaticDownloads($0) }
@@ -61,46 +85,48 @@ struct SettingsView: View {
                     .labelsHidden()
                     .disabled(!updateManager.automaticallyChecksForUpdates)
                 }
-                Button(updateManager.updateAvailable ? "Install available update…" : "Check for Updates…") {
-                    updateManager.checkForUpdates()
+
+                HStack {
+                    Button(updateManager.updateAvailable ? "Install Available Update…" : "Check for Updates…") {
+                        updateManager.checkForUpdates()
+                    }
+                    .disabled(!updateManager.canCheckForUpdates)
                 }
-                .disabled(!updateManager.canCheckForUpdates)
-                .padding(.top, 10)
+                .padding(.top, 12)
             }
             .padding(.vertical, 8)
-            
-            Spacer()
-            
+
             if launchManager.requiresApproval || launchManager.errorMessage != nil {
                 VStack(spacing: 6) {
                     Text(launchManager.errorMessage ?? "Allow NBA Tracker in Login Items to finish setup.")
-                        .font(.system(size: 11))
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                     Button("Open Login Items") { launchManager.openSystemSettings() }
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 12)
+                .padding(.vertical, 8)
             }
 
+            Spacer(minLength: 16)
+
             // App Info
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 Text("NBA Score Tracker")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.subheadline.weight(.medium))
                 Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""))")
-                    .font(.system(size: 10))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding(.bottom, 12)
         }
-        .frame(width: 360, height: 360)
+        .frame(maxWidth: .infinity)
         .onAppear { launchManager.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             launchManager.refresh()
         }
-        .background(.ultraThickMaterial)
     }
-    
+
     private func settingRow<Content: View>(
         icon: String,
         title: String,
@@ -109,20 +135,20 @@ struct SettingsView: View {
     ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 14))
+                .font(.body)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13))
+                    .font(.body)
                 Text(subtitle)
-                    .font(.system(size: 10))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            
+
             Spacer()
-            
+
             trailing()
         }
         .padding(.horizontal, 14)
@@ -132,35 +158,5 @@ struct SettingsView: View {
 
 #Preview {
     SettingsView()
-}
-
-/// Settings must outlive the transient MenuBarExtra panel. Login-item system
-/// notifications and approval UI can dismiss that panel by changing focus.
-@MainActor
-final class SettingsWindowController: NSWindowController {
-    static let shared = SettingsWindowController()
-
-    private init() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 360),
-            styleMask: [.titled, .closable], backing: .buffered, defer: false
-        )
-        window.title = "NBA Tracker"
-        window.isReleasedWhenClosed = false
-        window.hidesOnDeactivate = false
-        super.init(window: window)
-        window.contentView = NSHostingView(rootView: SettingsView(onClose: { [weak self] in
-            self?.close()
-        }))
-        window.center()
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    func show() {
-        LaunchAtLoginManager.shared.refresh()
-        showWindow(nil)
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
-    }
+        .frame(width: 360)
 }

@@ -47,6 +47,8 @@ player identity through ranking and cache reloads, duplicate/missing IDs, legacy
 cache decoding, and tolerant scoreboard decoding that drops malformed game rows
 while keeping their siblings.
 They also cover network payload and field limits, disk cache expiry cleanup, entry and byte budgets, and invalid cache paths.
+Day-strip checks verify that selecting any future day refreshes that day independently,
+without refreshing the other non-live future dates early.
 
 There is no test suite and no lint script configured. Don't invent either speculatively.
 
@@ -88,6 +90,8 @@ exists there — `cdn.nba.com`'s `_10` object is stale, frozen at a 2020 Finals 
 
 ## Gotchas and boundaries
 
+- The schedule uses five single-day chips (Yesterday, Today, and three dated days),
+  not a combined Upcoming tab. Keep expansion state above rows so it survives section changes.
 - **NBA's endpoints are unofficial and undocumented.** They can change shape or what
   they accept (headers, date handling) without notice — verify against live data when
   touching `NBAClient`.

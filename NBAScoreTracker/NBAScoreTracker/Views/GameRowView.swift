@@ -2,7 +2,9 @@ import SwiftUI
 
 struct GameRowView: View {
     let game: Game
-    @State private var isExpanded = false
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
     @FocusState private var isFocused: Bool
     
@@ -11,7 +13,7 @@ struct GameRowView: View {
             if game.status == .upcoming {
                 mainContent
             } else {
-                Button { isExpanded.toggle() } label: { mainContent }
+                Button(action: onToggle) { mainContent }
                     .buttonStyle(ScoreRowButtonStyle())
                     .focused($isFocused)
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(isFocused ? Color.accentColor : .clear, lineWidth: 2))
@@ -22,11 +24,12 @@ struct GameRowView: View {
             
             if isExpanded && game.status != .upcoming {
                 expandedContent
+                    .transition(.opacity)
             }
         }
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isHovering ? Color.primary.opacity(0.06) : Color.primary.opacity(0.03))
+                .fill(isHovering && game.status != .upcoming ? Color.primary.opacity(0.06) : Color.primary.opacity(0.03))
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onHover { isHovering = $0 }
@@ -56,7 +59,7 @@ struct GameRowView: View {
             // Expand indicator
             if game.status != .upcoming {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
@@ -68,12 +71,13 @@ struct GameRowView: View {
     
     private func teamRow(_ team: Team, isWinner: Bool) -> some View {
         HStack(spacing: 8) {
-            AsyncImage(url: team.logoURL) { phase in
+            AsyncImage(url: team.logoURL, transaction: Transaction(animation: reduceMotion ? nil : .easeOut(duration: 0.15))) { phase in
                 if let image = phase.image {
                     image.resizable().aspectRatio(contentMode: .fit)
+                        .transition(.opacity)
                 } else {
                     Image(systemName: "basketball")
-                        .font(.system(size: 17))
+                        .font(.title3)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -81,12 +85,12 @@ struct GameRowView: View {
             .accessibilityHidden(true)
             
             Text(team.tricode)
-                .font(.system(size: 13, weight: isWinner ? .bold : .medium))
+                .font(.body.weight(isWinner ? .bold : .medium))
                 .frame(width: 36, alignment: .leading)
             
             if game.status != .upcoming {
                 Text("\(team.score)")
-                    .font(.system(size: 16, weight: isWinner ? .bold : .medium, design: .rounded))
+                    .font(.system(.title3, design: .rounded, weight: isWinner ? .bold : .medium))
                     .frame(minWidth: 32, alignment: .trailing)
                     .monospacedDigit()
                     .foregroundStyle(game.status == .live || isWinner ? .primary : .secondary)
@@ -103,16 +107,16 @@ struct GameRowView: View {
                     .fill(.red)
                     .frame(width: 5, height: 5)
                 Text(game.statusText)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.red)
             }
         case .finished:
             Text(game.statusText.isEmpty ? "Final" : game.statusText)
-                .font(.system(size: 11, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
         case .upcoming:
             Text(localStartTime)
-                .font(.system(size: 11, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
         }
     }
@@ -127,7 +131,7 @@ struct GameRowView: View {
 
     private var broadcasterBadge: some View {
         Text(game.broadcaster)
-            .font(.system(size: 9, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
@@ -157,13 +161,13 @@ struct GameRowView: View {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.mini)
                         Text("Loading leaders…")
-                            .font(.system(size: 11))
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 8)
                 } else {
                     Text("Leaders unavailable")
-                        .font(.system(size: 11))
+                        .font(.subheadline)
                         .foregroundStyle(.tertiary)
                         .padding(.vertical, 8)
                 }
@@ -185,7 +189,7 @@ struct GameRowView: View {
             awayTeam: Team(tricode: "BOS", score: 92, leaders: []),
             period: 3,
             gameTimeUTC: ""
-        ))
+        ), isExpanded: true, onToggle: {})
         
         GameRowView(game: Game(
             id: "2",
@@ -196,15 +200,14 @@ struct GameRowView: View {
             awayTeam: Team(tricode: "NYK", score: 0, leaders: []),
             period: 0,
             gameTimeUTC: ""
-        ))
+        ), isExpanded: false, onToggle: {})
     }
     .padding()
     .frame(width: 340)
     .background(.ultraThickMaterial)
 }
 
-/// Native focus/keyboard semantics, with immediate pressed feedback. No repeated
-/// expansion animation or score-counting animation in this glanceable utility.
+/// Native focus/keyboard semantics with immediate pressed feedback.
 private struct ScoreRowButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 

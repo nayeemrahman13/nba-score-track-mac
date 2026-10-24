@@ -7,13 +7,13 @@ struct LeadersView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("\(teamName) Leaders")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
             
             ForEach(leaders) { player in
                 HStack(spacing: 8) {
                     Text(player.name)
-                        .font(.system(size: 11))
+                        .font(.subheadline)
                         .lineLimit(1)
                         .help(player.detailTooltip)
                     
@@ -37,10 +37,10 @@ struct LeadersView: View {
     private func statBadge(_ value: Int, _ label: String) -> some View {
         VStack(spacing: 1) {
             Text("\(value)")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .font(.system(.subheadline, design: .rounded, weight: .semibold))
                 .monospacedDigit()
             Text(label)
-                .font(.system(size: 9, weight: .medium))
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
         }
         .frame(width: 28)
