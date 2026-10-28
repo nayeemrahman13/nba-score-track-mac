@@ -38,6 +38,9 @@ struct GameListView: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 3)
+                    // LazyVStack reuses a row's rendered view, without updating it,
+                    // when its ID moves to another section's ForEach.
+                    .id("\(game.id):\(game.status.rawValue)")
                     .transition(.opacity)
                 }
             } header: {
