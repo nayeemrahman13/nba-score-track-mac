@@ -24,7 +24,7 @@ Network responses have a 2 MiB limit enforced during download, including respons
 
 Settings opens inline within the menu-bar window rather than as a modal sheet or separate window, keeping navigation in one place. Login-item status is refreshed when Settings appears and when the app becomes active again.
 
-A five-day strip shows Yesterday, Today, and the next three dated days, one day at a time. All five schedules are prefetched; each keeps its own loading, empty, error, and retained-data state. Live dots mark days with games in progress. Use ⌘← and ⌘→ to change days. The footer reports the selected day's update time and labels stale scores explicitly.
+A five-day strip shows Yesterday, Today, and the next three dated days, one day at a time. Every time the menu-bar window opens, it returns to Today's scores, including after viewing another day or Settings. All five schedules are prefetched; each keeps its own loading, empty, error, and retained-data state. Live dots mark days with games in progress. Use ⌘← and ⌘→ to change days. The footer reports the selected day's update time and labels stale scores explicitly.
 
 The UI distinguishes initial loading, a successful empty schedule, initial failure, and failure with retained scores. Refresh is available through the toolbar or ⌘R. Live and final game rows are native keyboard-accessible buttons; upcoming rows have no interactive hover highlight. Expanded leaders stay open when a game moves between sections. Day selection and expansion use short, non-bouncing springs, disabled under Reduce Motion; score updates do not animate. Tipoff times use the local timezone. Missing broadcast information is omitted rather than guessed.
 

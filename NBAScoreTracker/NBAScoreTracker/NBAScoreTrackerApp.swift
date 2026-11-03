@@ -11,10 +11,6 @@ struct NBAScoreTrackerApp: App {
         MenuBarExtra {
             ContentView()
                 .environmentObject(nbaService)
-                .background(PopoverVisibilityReader(onChange: nbaService.setPopoverVisible))
-                .onAppear {
-                    nbaService.setPopoverVisible(true)
-                }
                 .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
                     nbaService.resume()
                 }
@@ -27,9 +23,6 @@ struct NBAScoreTrackerApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
                     nbaService.resume()
                 }
-                .onDisappear {
-                    nbaService.setPopoverVisible(false)
-                }
         } label: {
             Image(systemName: updateManager.updateAvailable ? "arrow.down.circle.fill" : "basketball.fill")
                 .symbolRenderingMode(.hierarchical)
@@ -40,8 +33,8 @@ struct NBAScoreTrackerApp: App {
 }
 
 // MenuBarExtra may retain its SwiftUI content while hiding the window, so
-// onAppear/onDisappear alone are not a reliable signal for polling frequency.
-private struct PopoverVisibilityReader: NSViewRepresentable {
+// onAppear/onDisappear alone cannot reliably reset navigation or update polling.
+struct PopoverVisibilityReader: NSViewRepresentable {
     let onChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> TrackingView {

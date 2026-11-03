@@ -8,6 +8,7 @@ struct ContentView: View {
     // between the Live, Upcoming and Final sections.
     @State private var expandedGames: Set<String> = []
     @State private var showingSettings = false
+    @State private var isPopoverVisible = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let dayOffsets = ScoreDate.trackedOffsets.sorted()
@@ -37,12 +38,12 @@ struct ContentView: View {
                 .transition(.opacity)
             } else {
                 header
-                DayStrip(offsets: Self.dayOffsets, reference: baseDate, selection: $selectedOffset) { offset in
+                DayStrip(offsets: Self.dayOffsets, reference: baseDate,
+                         selection: Binding(get: { selectedOffset }, set: selectDate)) { offset in
                     nbaService.games[ScoreDate.key(offset: offset, now: baseDate)]?.contains { $0.status == .live } == true
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 10)
-                .onChange(of: selectedOffset) { nbaService.selectDate(offset: $0) }
 
                 Divider()
                 ScrollView {
@@ -81,6 +82,24 @@ struct ContentView: View {
             footer
         }
         .frame(width: 360)
+        .background(PopoverVisibilityReader(onChange: setPopoverVisible))
+        .onAppear { setPopoverVisible(true) }
+        .onDisappear { setPopoverVisible(false) }
+    }
+
+    private func setPopoverVisible(_ visible: Bool) {
+        guard isPopoverVisible != visible else { return }
+        isPopoverVisible = visible
+        if visible {
+            showingSettings = false
+            selectDate(0)
+        }
+        nbaService.setPopoverVisible(visible)
+    }
+
+    private func selectDate(_ offset: Int) {
+        selectedOffset = offset
+        nbaService.selectDate(offset: offset)
     }
 
     private var header: some View {
@@ -133,7 +152,7 @@ struct ContentView: View {
     private func step(_ delta: Int) {
         guard let index = Self.dayOffsets.firstIndex(of: selectedOffset) else { return }
         let next = min(max(index + delta, 0), Self.dayOffsets.count - 1)
-        selectedOffset = Self.dayOffsets[next]
+        selectDate(Self.dayOffsets[next])
     }
 
     private var footer: some View {
