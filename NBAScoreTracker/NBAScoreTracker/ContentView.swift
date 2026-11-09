@@ -92,7 +92,7 @@ struct ContentView: View {
         isPopoverVisible = visible
         if visible {
             showingSettings = false
-            selectDate(0)
+            selectedOffset = 0
         }
         nbaService.setPopoverVisible(visible)
     }

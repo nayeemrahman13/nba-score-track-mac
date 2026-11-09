@@ -687,6 +687,22 @@ private struct ReviewRegressions {
         precondition(pacific.map(\.id) == ["52", "50"], "Pacific dates must include the next Eastern day and exclude exact local midnight")
         print("PASS: Pacific dates include both Eastern schedules and use an exclusive midnight boundary")
 
+        // At 9:30 PM Pacific (12:30 AM Eastern the next day), Today must remain
+        // anchored to the Pacific system date and continue using the live CDN
+        // scoreboard for that night's Eastern slate.
+        clock = ISO8601DateFormatter().date(from: "2026-10-08T04:30:00Z")!
+        FixtureProtocol.bodies = [
+            "cdn": scheduleBody(date: "2026-10-07", games: [("50", "2026-10-08T06:59:59.999Z")]),
+            "2026-10-08": scheduleBody(date: "2026-10-08", games: [])
+        ]
+        FixtureProtocol.statuses = ["2026-10-07": 503]
+        service.setPopoverVisible(true)
+        precondition(service.day == "2026-10-07" && service.upcomingDates == ["2026-10-08", "2026-10-09", "2026-10-10"])
+        await service.refreshAll()
+        precondition(service.day == "2026-10-07" && service.games["2026-10-07"]?.map(\.id) == ["50"])
+        FixtureProtocol.statuses = [:]
+        print("PASS: after 9 PM Pacific (Eastern midnight), Today stays on the system date and keeps using the live CDN scoreboard")
+
         NSTimeZone.default = TimeZone(identifier: "America/New_York")!
         for (date, start, last, end, hours) in [
             ("2026-03-08", "2026-03-08T05:00:00Z", "2026-03-09T03:59:59.999Z", "2026-03-09T04:00:00Z", 23.0),
