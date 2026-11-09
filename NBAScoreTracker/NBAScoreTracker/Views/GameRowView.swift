@@ -148,15 +148,15 @@ struct GameRowView: View {
             Divider()
                 .padding(.horizontal, 8)
             
-            if !game.homeTeam.leaders.isEmpty {
-                LeadersView(teamName: game.homeTeam.tricode, leaders: game.homeTeam.leaders)
-            }
-            
             if !game.awayTeam.leaders.isEmpty {
                 LeadersView(teamName: game.awayTeam.tricode, leaders: game.awayTeam.leaders)
             }
             
-            if game.homeTeam.leaders.isEmpty && game.awayTeam.leaders.isEmpty {
+            if !game.homeTeam.leaders.isEmpty {
+                LeadersView(teamName: game.homeTeam.tricode, leaders: game.homeTeam.leaders)
+            }
+            
+            if game.awayTeam.leaders.isEmpty && game.homeTeam.leaders.isEmpty {
                 if game.isLoadingLeaders {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.mini)
