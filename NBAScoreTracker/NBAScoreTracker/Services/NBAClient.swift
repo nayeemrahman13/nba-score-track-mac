@@ -135,7 +135,7 @@ actor NBAClient: NBAFetching {
     }
 
     private func loadLeagueScoreboard(for date: LeagueDate) async throws -> [Game] {
-        if date == LeagueDate(containing: now()) {
+        if LeagueDate.mayUseLiveCDN(date, now: now()) {
             do {
                 let response: CDNScoreboardResponse = try await load(
                     usesWNBAEndpoints

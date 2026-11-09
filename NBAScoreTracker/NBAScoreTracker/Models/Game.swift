@@ -322,7 +322,7 @@ enum ScoreDate {
     private static func formatter(in timeZone: TimeZone) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.calendar = calendar(in: timeZone)
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
@@ -364,6 +364,13 @@ struct LeagueDate: Hashable {
 
     init(containing date: Date) {
         key = ScoreDate.key(now: date, timeZone: Self.calendar.timeZone)
+    }
+
+    /// The NBA's live CDN scoreboard stays on the active game night past
+    /// Eastern midnight (9 PM Pacific) until midday Eastern the next day.
+    static func mayUseLiveCDN(_ date: LeagueDate, now: Date) -> Bool {
+        date == LeagueDate(containing: now)
+            || date == LeagueDate(containing: now.addingTimeInterval(-12 * 3600))
     }
 
     static func covering(_ interval: DateInterval) -> [LeagueDate] {

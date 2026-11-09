@@ -50,18 +50,22 @@ final class NBAService: ObservableObject {
     }
 
     func setPopoverVisible(_ visible: Bool) {
+        day = ScoreDate.key(now: now())
+        if visible { selectedOffset = 0 }
         guard isPopoverVisible != visible || pollingTask == nil else { return }
         isPopoverVisible = visible
         restartPolling()
     }
 
     func selectDate(offset: Int) {
+        day = ScoreDate.key(now: now())
         selectedOffset = offset
         restartPolling()
     }
 
     func resume() {
         // Sleep and wall-clock changes invalidate attempt-based freshness.
+        NSTimeZone.resetSystemTimeZone()
         day = ScoreDate.key(now: now())
         attemptedAt.removeAll()
         restartPolling()
