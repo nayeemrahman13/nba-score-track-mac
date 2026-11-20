@@ -54,11 +54,6 @@ actor BoxScoreCache {
         pruneDisk(force: true)
     }
     
-    /// Checks if a finished game's box score is already cached
-    func hasCached(gameId: String) -> Bool {
-        return get(gameId: gameId) != nil
-    }
-    
     // MARK: - Disk Operations
     
     private func fileURL(for gameId: String) -> URL {
@@ -181,7 +176,6 @@ struct CachedPlayer: Codable {
         Player(
             id: id ?? fallbackID,
             name: name,
-            nameI: nameI,
             position: position,
             points: points,
             rebounds: rebounds,

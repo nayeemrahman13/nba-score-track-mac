@@ -247,7 +247,6 @@ struct Team: Identifiable {
 struct Player: Identifiable {
     var id: String = UUID().uuidString
     let name: String
-    let nameI: String
     let position: String
     let points: Int
     let rebounds: Int

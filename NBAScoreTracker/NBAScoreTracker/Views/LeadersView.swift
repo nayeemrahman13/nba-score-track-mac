@@ -51,8 +51,8 @@ struct LeadersView: View {
     LeadersView(
         teamName: "LAL",
         leaders: [
-            Player(name: "LeBron James", nameI: "L. James", position: "F", points: 28, rebounds: 8, assists: 11),
-            Player(name: "Anthony Davis", nameI: "A. Davis", position: "C", points: 24, rebounds: 12, assists: 3)
+            Player(name: "LeBron James", position: "F", points: 28, rebounds: 8, assists: 11),
+            Player(name: "Anthony Davis", position: "C", points: 24, rebounds: 12, assists: 3)
         ]
     )
     .padding()
