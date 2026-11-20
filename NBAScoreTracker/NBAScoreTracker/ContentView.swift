@@ -49,7 +49,7 @@ struct ContentView: View {
                 ScrollView {
                     if nbaService.games[dateKey] == nil {
                         if let error = nbaService.errors[dateKey] {
-                            stateView(icon: "wifi.exclamationmark", title: "Scores unavailable", detail: error, retry: true)
+                            stateView(icon: "wifi.exclamationmark", title: "Scores unavailable", detail: error)
                         } else {
                             VStack(spacing: 12) {
                                 ProgressView().controlSize(.small)
@@ -189,15 +189,13 @@ struct ContentView: View {
         .padding(.vertical, 10)
     }
 
-    private func stateView(icon: String, title: String, detail: String, retry: Bool) -> some View {
+    private func stateView(icon: String, title: String, detail: String) -> some View {
         VStack(spacing: 10) {
             Image(systemName: icon).font(.largeTitle).foregroundStyle(.secondary)
             Text(title).font(.title3.weight(.semibold))
             Text(detail).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            if retry {
-                Button("Try again") { Task { await nbaService.refreshAll() } }
-                    .disabled(nbaService.isLoading)
-            }
+            Button("Try again") { Task { await nbaService.refreshAll() } }
+                .disabled(nbaService.isLoading)
         }
         .padding(.horizontal, 30)
         .padding(.vertical, 64)
