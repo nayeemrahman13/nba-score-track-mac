@@ -78,7 +78,7 @@ windows use 5/15-minute intervals; unselected non-live dates refresh
 at most every five minutes; each failed date backs off independently from 30 seconds
 to five minutes. Manual refresh bypasses freshness/backoff and joins any request
 already running. `BoxScoreCache` accepts only confirmed final results whose totals
-match the scoreboard and expires entries after six hours. See README for the full
+match the scoreboard and expires entries after six hours. See docs/behavior.md for the full
 behavior contract.
 
 ## Debug league override
@@ -99,7 +99,7 @@ exists there — `cdn.nba.com`'s `_10` object is stale, frozen at a 2020 Finals 
   check; don't invent a test or lint setup speculatively.
 - For refresh changes, run the regression executable and manually verify concurrent
   refreshes, offline recovery, midnight rollover, and live-to-final cache transitions
-  (README's Verification section has the full checklist).
+  (docs/build.md has the full checklist).
 - Sparkle is pinned to 2.10.0. Keep the sandbox and its two Sparkle Mach lookup exceptions.
   Archive and export through Xcode to sign nested helpers. Never ship `get-task-allow`
   or disable library validation. The Sparkle private key stays in the login keychain;
