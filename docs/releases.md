@@ -22,7 +22,7 @@ See [Apple's notarization workflow](https://developer.apple.com/documentation/se
 
 Increment the build number for every release. Sparkle compares `CFBundleVersion`, not the displayed version.
 
-Run the focused regression executable described in the README. Then prepare the release. This example uses displayed version `1.0` and build number `2`:
+Run the regression executable from [Build and check the app](build.md). Then prepare the release. This example uses displayed version `1.0` and build number `2`:
 
 ```sh
 ./scripts/release.sh 1.0 2 nba-score-tracker-notary
