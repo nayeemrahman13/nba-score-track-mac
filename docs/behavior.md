@@ -1,6 +1,6 @@
 # Score behavior
 
-`NBAClient` fetches scores. `NBAService` publishes each date separately. `BoxScoreCache` stores final box scores.
+`NBAClient` fetches scores. `NBAService` publishes each date separately. `BoxScoreCache` stores final box scores. `LogoCache` caches downsampled team logos. `ScoreboardSnapshotCache` persists a cold-start snapshot.
 
 The league endpoints are unofficial and can change without notice.
 
@@ -33,6 +33,8 @@ The NBA stats URL sets `LeagueID=00`.
 An empty CDN scoreboard with a matching date is success. The client does not call the stats feed for that response.
 
 Outside the live CDN window, the client uses only the stats feed.
+
+CDN scoreboard and box-score requests send conditional `If-None-Match` and `If-Modified-Since` headers when a validated response is cached in memory, reusing the cached decoded response on `304 Not Modified` without re-decoding JSON. The in-memory conditional cache is bounded to 24 entries and 8 MiB (enforced across concurrent evictions and revalidations) and is never used for `stats.nba.com`.
 
 An HTTP failure throws. It does not become an empty schedule.
 
@@ -90,7 +92,9 @@ Player leaders update when the box score matches the displayed state or is later
 
 The app also requests a box score for an upcoming game whose tipoff time has passed.
 
-Each date requests at most 3 box scores at a time.
+Each date requests at most 3 box scores at a time, prioritized dynamically: expanded live/upcoming games first, then other live/upcoming games, then expanded finals, then other finals.
+
+Confirmed final games whose scoreboard and box-score totals match and whose leaders are already populated are skipped on subsequent polls until their 6-hour TTL expires or an official score correction arrives.
 
 ## Player leaders
 
@@ -124,9 +128,11 @@ When both teams have no leaders after the fetch, the expanded row shows **Leader
 
 The live CDN scoreboard does not include national TV.
 
-When any game on a league date has no stored broadcaster, the client loads the stats feed for that date in the background.
+When any game on a league date has no stored broadcaster (positive or negative cache), the client loads the stats feed for that date in the background.
 
 It starts that load at most once every 30 minutes per league date.
+
+Games confirmed to have no national broadcaster on the stats feed are negatively cached for 6 hours so local-only games do not re-trigger background stats calls every 30 minutes.
 
 A failure of that load does not fail the scores.
 
@@ -140,17 +146,20 @@ A missing broadcaster stays blank.
 
 A national name whose letters include AMAZON is shown as **Prime Video**.
 
-## Polling
+## Polling and connectivity
 
-The poll waits until the current refresh finishes, then sleeps for the interval below.
+Polling and the footer's 15-second `TimelineView` run only while the menu bar window is visible and the network path is satisfied (`NWPathMonitor`).
+
+While hidden or offline, polling and in-flight refreshes or box-score enrichments are cancelled and follow-up scheduling is suppressed (zero background timers or network requests).
+
+While visible and online, the poll waits until the current foreground refresh finishes, resumes any leader enrichment interrupted while hidden, and sleeps only the remaining freshness window (clamped between 1 second and the interval below).
 
 | Window | Condition | Wait |
 | --- | --- | --- |
 | Visible | At least one live game | 15 seconds |
 | Visible | No live game and no error | 60 seconds |
 | Visible | No live game, and at least one date has an error | 30 seconds |
-| Hidden | At least one live game | 5 minutes |
-| Hidden | No live game | 15 minutes |
+| Hidden | Any | Paused |
 
 A live game on any loaded day selects the live row, even when another day has an error.
 
@@ -160,25 +169,33 @@ The first failure waits 30 seconds. Each later failure doubles the previous wait
 
 A successful date keeps its own interval. It does not use a failed date's retry wait.
 
+Automatic retries pause while offline (`NWPathMonitor` reports unsatisfied). When connectivity transitions from unsatisfied to satisfied, failure backoff and attempt timestamps reset, and visible windows refresh immediately.
+
+The foreground refresh lane loads **Today**, **Yesterday**, and any already-loaded tracked day with live games.
+
+Once **Yesterday** is settled (loaded with no errors, all games final or empty, and at least 3 hours past local midnight) and not selected, its refresh interval rises to 30 minutes.
+
+Future days (+1, +2, +3) load purely on-demand when selected in the day strip, each in its own decoupled lane so a slow `stats.nba.com` future request never delays **Today** or blocks the refresh button when returning to **Today**.
+
 **Today**, the selected day, and any day that contains a live game use the loop wait as their refresh interval.
 
-Any other day with no current failure refreshes at most every 5 minutes.
+Unselected non-live **Yesterday** (before settling) refreshes at most every 5 minutes.
 
-When no refresh is running, a manual refresh skips the freshness wait and the failure wait.
+When no refresh is running, a manual refresh skips the freshness wait and the failure wait for the foreground lane (and the selected future day, if one is selected).
 
 When a refresh is already running, the manual refresh waits for that refresh.
 
 The running refresh then checks freshness once more. That extra check still uses the freshness wait and the failure wait.
 
-Wake, a clock change, a time zone change, and local midnight clear the freshness times and start a new poll.
+Wake, a clock change, a time zone change, and local midnight clear the freshness times and update `day`. If a refresh is in flight they schedule a follow-up check; if the window is visible and online they restart polling immediately (otherwise the cleared freshness ensures the next open or reconnect refreshes immediately).
 
-Showing or hiding the window starts a new poll. Changing the selected day starts a new poll.
+Opening the window selects **Today** and starts polling when online. Closing the window pauses polling. Changing the selected day restarts polling when visible and online.
 
-Opening the window selects **Today**.
+The refresh button is disabled while the active lane for the selected day is loading.
 
-The refresh button is disabled while a refresh is running.
+## Caches
 
-## Box score cache
+### Box score cache
 
 The cache stores a box score only when the game is final on both feeds and the two team totals match the scoreboard.
 
@@ -194,13 +211,29 @@ The disk cache holds at most 100 files and 16 MiB.
 
 Each file is at most 256 KiB.
 
-A write prunes the directory immediately. A read prunes it at most every 5 minutes.
+Reads check in-memory entries first without touching disk. Writes update tracked entry sizes and prune immediately when entry count, byte budget, expiry, or 5-minute maintenance thresholds are crossed. Reads prune at most every 5 minutes.
 
 The prune looks only at JSON files.
 
 It deletes expired files, symbolic links, and files that are not regular files.
 
 It deletes files larger than 256 KiB, and files whose names are not game IDs.
+
+### Team logo cache
+
+`LogoCache` replaces `AsyncImage` with a synchronous in-memory `NSCache` (limit 48) backed by a disk cache in `NBAScoreTracker/logos-v1` inside the user caches directory.
+
+Downloaded logos are capped at 512 KiB and downsampled via ImageIO to at most 66 px before caching in memory and writing PNGs (max 128 KiB each) to disk.
+
+Disk logo cache entries are namespaced by league (`nba` / `wnba`), expire after 30 days, and are bounded to 64 files and 4 MiB total. Failed downloads observe a 60-second cooldown before retrying.
+
+### Cold-start scoreboard snapshot
+
+`ScoreboardSnapshotCache` persists a debounced (≥ 10 seconds), atomic snapshot of loaded scoreboards, update timestamps, and accepted game progress provenance (`progressByGame`) to `NBAScoreTracker/snapshot-v1.json` inside the user caches directory.
+
+Snapshots are capped at 512 KiB, namespaced by league, expire after 6 hours, and reject symlinks, unparseable `gameTimeUTC` values, or malformed records.
+
+On cold launch, `NBAService` hydrates tracked days and their progress provenance from a valid snapshot immediately without populating attempt timestamps, so the first open paints last-known scores on frame 0 without letting a lagging first refresh move scores backward.
 
 ## Request limits
 

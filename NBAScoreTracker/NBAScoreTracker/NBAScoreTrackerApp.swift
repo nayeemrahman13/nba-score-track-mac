@@ -4,7 +4,7 @@ import AppKit
 @main
 struct NBAScoreTrackerApp: App {
     @NSApplicationDelegateAdaptor(TrackerAppDelegate.self) private var appDelegate
-    @StateObject private var nbaService = NBAService()
+    @StateObject private var nbaService = NBAService(snapshotCache: .shared)
     @StateObject private var updateManager = UpdateManager.shared
     
     var body: some Scene {
@@ -46,28 +46,43 @@ struct PopoverVisibilityReader: NSViewRepresentable {
     func updateNSView(_ view: TrackingView, context: Context) { view.onChange = onChange }
 
     final class TrackingView: NSView {
+        private final class ObserverBag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var tokens: [NSObjectProtocol] = []
+
+            func replace(with newTokens: [NSObjectProtocol]) {
+                lock.lock()
+                let previous = tokens
+                tokens = newTokens
+                lock.unlock()
+                previous.forEach { NotificationCenter.default.removeObserver($0) }
+            }
+
+            deinit {
+                replace(with: [])
+            }
+        }
+
         var onChange: ((Bool) -> Void)?
-        private var observers: [NSObjectProtocol] = []
+        private let observers = ObserverBag()
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            observers.forEach { NotificationCenter.default.removeObserver($0) }
-            observers.removeAll()
+            var newTokens: [NSObjectProtocol] = []
             if let window {
                 for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
                              NSWindow.didChangeOcclusionStateNotification, NSWindow.willCloseNotification] {
-                    observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    newTokens.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                         Task { @MainActor [weak self] in self?.reportVisibility() }
                     })
                 }
             }
+            observers.replace(with: newTokens)
             Task { @MainActor [weak self] in self?.reportVisibility() }
         }
 
         private func reportVisibility() {
             onChange?(window?.isVisible == true && window?.occlusionState.contains(.visible) == true)
         }
-
-        deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct GameRowView: View {
     let game: Game
@@ -71,18 +72,7 @@ struct GameRowView: View {
     
     private func teamRow(_ team: Team, isWinner: Bool) -> some View {
         HStack(spacing: 8) {
-            AsyncImage(url: team.logoURL, transaction: Transaction(animation: reduceMotion ? nil : .easeOut(duration: 0.15))) { phase in
-                if let image = phase.image {
-                    image.resizable().aspectRatio(contentMode: .fit)
-                        .transition(.opacity)
-                } else {
-                    Image(systemName: "basketball")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 22, height: 22)
-            .accessibilityHidden(true)
+            TeamLogoView(team: team)
             
             Text(team.tricode)
                 .font(.body.weight(isWinner ? .bold : .medium))
@@ -175,6 +165,44 @@ struct GameRowView: View {
         }
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
+    }
+}
+
+private struct TeamLogoView: View {
+    let team: Team
+    @State private var loaded: (tricode: String, image: NSImage)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let stateImage = loaded?.tricode == team.tricode ? loaded?.image : nil
+        let image = LogoCache.shared.cachedImage(for: team.tricode) ?? stateImage
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .transition(.opacity)
+            } else {
+                Image(systemName: "basketball")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 22, height: 22)
+        .accessibilityHidden(true)
+        .task(id: team.tricode) {
+            guard LogoCache.shared.cachedImage(for: team.tricode) == nil,
+                  let url = team.logoURL else { return }
+            if let fetched = await LogoCache.shared.image(for: team.tricode, url: url) {
+                if reduceMotion {
+                    loaded = (team.tricode, fetched)
+                } else {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        loaded = (team.tricode, fetched)
+                    }
+                }
+            }
+        }
     }
 }
 

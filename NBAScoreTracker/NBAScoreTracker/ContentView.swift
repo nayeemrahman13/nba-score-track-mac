@@ -39,7 +39,7 @@ struct ContentView: View {
             } else {
                 header
                 DayStrip(offsets: Self.dayOffsets, reference: baseDate,
-                         selection: Binding(get: { selectedOffset }, set: selectDate)) { offset in
+                         selection: Binding(get: { selectedOffset }, set: { selectDate($0) })) { offset in
                     nbaService.games[ScoreDate.key(offset: offset, now: baseDate)]?.contains { $0.status == .live } == true
                 }
                 .padding(.horizontal, 10)
@@ -83,8 +83,12 @@ struct ContentView: View {
         }
         .frame(width: 360)
         .background(PopoverVisibilityReader(onChange: setPopoverVisible))
-        .onAppear { setPopoverVisible(true) }
+        .onAppear {
+            nbaService.setExpandedGames(expandedGames)
+            setPopoverVisible(true)
+        }
         .onDisappear { setPopoverVisible(false) }
+        .onChange(of: expandedGames) { nbaService.setExpandedGames($0) }
     }
 
     private func setPopoverVisible(_ visible: Bool) {
@@ -157,18 +161,15 @@ struct ContentView: View {
 
     private var footer: some View {
         HStack {
-            TimelineView(.periodic(from: .now, by: 15)) { context in
-                if let updated = nbaService.updatedAt[dateKey] {
-                    let stale = nbaService.errors[dateKey] != nil || context.date.timeIntervalSince(updated) > 120
-                    let time = updated.formatted(date: .omitted, time: .shortened)
-                    HStack(spacing: 5) {
-                        Circle().fill(stale ? Color.orange : Color.secondary).frame(width: 5, height: 5)
-                            .accessibilityHidden(true)
-                        Text(stale ? "Updated \(time) · Out of date" : "Updated \(time)")
+            Group {
+                // Only run the 15s periodic clock while the popover is open and
+                // online so hidden or offline windows incur zero timer wakeups.
+                if isPopoverVisible && nbaService.isOnline {
+                    TimelineView(.periodic(from: .now, by: 15)) { context in
+                        footerStatus(at: context.date)
                     }
-                    .help(stale ? "Scores may be out of date. Refresh to try again." : "Scores refresh automatically while this window is open.")
                 } else {
-                    Text(nbaService.loadingDates.contains(dateKey) ? "Connecting to NBA…" : "Waiting for scores")
+                    footerStatus(at: Date())
                 }
             }
             .font(.subheadline)
@@ -187,6 +188,22 @@ struct ContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private func footerStatus(at date: Date) -> some View {
+        if let updated = nbaService.updatedAt[dateKey] {
+            let stale = nbaService.errors[dateKey] != nil || date.timeIntervalSince(updated) > 120
+            let time = updated.formatted(date: .omitted, time: .shortened)
+            HStack(spacing: 5) {
+                Circle().fill(stale ? Color.orange : Color.secondary).frame(width: 5, height: 5)
+                    .accessibilityHidden(true)
+                Text(stale ? "Updated \(time) · Out of date" : "Updated \(time)")
+            }
+            .help(stale ? "Scores may be out of date. Refresh to try again." : "Scores refresh automatically while this window is open.")
+        } else {
+            Text(nbaService.loadingDates.contains(dateKey) ? "Connecting to NBA…" : "Waiting for scores")
+        }
     }
 
     private func stateView(icon: String, title: String, detail: String) -> some View {
