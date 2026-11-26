@@ -268,7 +268,6 @@ struct Team: Identifiable, Codable, Equatable, Sendable {
 struct Player: Identifiable, Codable, Equatable, Sendable {
     var id: String = UUID().uuidString
     let name: String
-    let nameI: String
     let position: String
     let points: Int
     let rebounds: Int

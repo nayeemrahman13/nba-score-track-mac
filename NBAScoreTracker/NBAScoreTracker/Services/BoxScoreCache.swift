@@ -83,11 +83,6 @@ actor BoxScoreCache {
         }
     }
     
-    /// Checks if a finished game's box score is already cached
-    func hasCached(gameId: String) -> Bool {
-        return get(gameId: gameId) != nil
-    }
-    
     // MARK: - Disk Operations
 
     private enum DiskLoadResult {
@@ -233,7 +228,6 @@ struct CachedPlayer: Codable, Equatable, Sendable {
         Player(
             id: id ?? fallbackID,
             name: name,
-            nameI: nameI,
             position: position,
             points: points,
             rebounds: rebounds,
