@@ -19,16 +19,16 @@ enum NBAFeedLimits {
 }
 
 // MARK: - CDN Scoreboard Response (cdn.nba.com - more reliable)
-struct CDNScoreboardResponse: Codable {
+struct CDNScoreboardResponse: Codable, Sendable {
     let scoreboard: CDNScoreboard
 }
 
-struct CDNScoreboard: Codable {
+struct CDNScoreboard: Codable, Sendable {
     let gameDate: String?
     let games: [CDNGame]
 }
 
-struct CDNGame: Codable {
+struct CDNGame: Codable, Sendable {
     let gameId: String
     let gameStatus: Int
     let gameStatusText: String
@@ -40,32 +40,32 @@ struct CDNGame: Codable {
     var gameClock: String? = nil
 }
 
-struct CDNTeam: Codable {
+struct CDNTeam: Codable, Sendable {
     let teamTricode: String?
     let score: Int?
 }
 
-struct CDNBroadcasters: Codable {
+struct CDNBroadcasters: Codable, Sendable {
     let nationalTvBroadcasters: [CDNBroadcaster]?
     let nationalRadioBroadcasters: [CDNBroadcaster]?
     let homeTvBroadcasters: [CDNBroadcaster]?
     let awayTvBroadcasters: [CDNBroadcaster]?
 }
 
-struct CDNBroadcaster: Codable {
+struct CDNBroadcaster: Codable, Sendable {
     let broadcasterDisplay: String?
 }
 
 // MARK: - Legacy Scoreboard Response (stats.nba.com - often blocked)
-struct ScoreboardResponse: Codable {
+struct ScoreboardResponse: Codable, Sendable {
     let scoreboard: Scoreboard
 }
 
-struct Scoreboard: Codable {
+struct Scoreboard: Codable, Sendable {
     let games: [APIGame]
 }
 
-struct APIGame: Codable {
+struct APIGame: Codable, Sendable {
     let gameId: String
     let gameStatus: Int
     let gameStatusText: String
@@ -77,26 +77,26 @@ struct APIGame: Codable {
     var gameClock: String? = nil
 }
 
-struct APITeam: Codable {
+struct APITeam: Codable, Sendable {
     let teamTricode: String?
     let score: Int?
 }
 
-struct Broadcasters: Codable {
+struct Broadcasters: Codable, Sendable {
     let nationalBroadcasters: [Broadcaster]?
     let nationalOttBroadcasters: [Broadcaster]?
 }
 
-struct Broadcaster: Codable {
+struct Broadcaster: Codable, Sendable {
     let broadcastDisplay: String?
 }
 
 // MARK: - Boxscore Response
-struct BoxscoreResponse: Codable {
+struct BoxscoreResponse: Codable, Sendable {
     let game: BoxscoreGame?
 }
 
-struct BoxscoreGame: Codable {
+struct BoxscoreGame: Codable, Sendable {
     let gameId: String?
     let gameStatus: Int?
     let gameStatusText: String?
@@ -106,13 +106,13 @@ struct BoxscoreGame: Codable {
     let awayTeam: BoxscoreTeam?
 }
 
-struct BoxscoreTeam: Codable {
+struct BoxscoreTeam: Codable, Sendable {
     let teamTricode: String?
     let score: Int?
     let players: [BoxscorePlayer]?
 }
 
-struct BoxscorePlayer: Codable {
+struct BoxscorePlayer: Codable, Sendable {
     let personId: Int?
     let name: String?
     let nameI: String?
@@ -120,7 +120,7 @@ struct BoxscorePlayer: Codable {
     let statistics: PlayerStatistics?
 }
 
-struct PlayerStatistics: Codable {
+struct PlayerStatistics: Codable, Sendable {
     let points: Int?
     let reboundsTotal: Int?
     let assists: Int?
@@ -136,7 +136,7 @@ struct PlayerStatistics: Codable {
 }
 
 // MARK: - App Models
-struct Game: Identifiable {
+struct Game: Identifiable, Codable, Equatable, Sendable {
     let id: String
     var status: GameStatus
     var statusText: String
@@ -148,6 +148,11 @@ struct Game: Identifiable {
     let gameTimeUTC: String
     let startDate: Date?
     var isLoadingLeaders = false
+
+    private enum CodingKeys: String, CodingKey {
+        case id, status, statusText, broadcaster, homeTeam, awayTeam
+        case period, gameClock, gameTimeUTC, startDate
+    }
 
     init(
         id: String,
@@ -174,8 +179,24 @@ struct Game: Identifiable {
         self.startDate = startDate ?? ScoreDate.tipoffDate(from: gameTimeUTC)
         self.isLoadingLeaders = isLoadingLeaders
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        status = try container.decode(GameStatus.self, forKey: .status)
+        statusText = try container.decode(String.self, forKey: .statusText)
+        broadcaster = try container.decode(String.self, forKey: .broadcaster)
+        homeTeam = try container.decode(Team.self, forKey: .homeTeam)
+        awayTeam = try container.decode(Team.self, forKey: .awayTeam)
+        period = try container.decode(Int.self, forKey: .period)
+        gameClock = try container.decode(String.self, forKey: .gameClock)
+        gameTimeUTC = try container.decode(String.self, forKey: .gameTimeUTC)
+        let decodedStart = try container.decodeIfPresent(Date.self, forKey: .startDate)
+        startDate = decodedStart ?? ScoreDate.tipoffDate(from: gameTimeUTC)
+        isLoadingLeaders = false
+    }
     
-    enum GameStatus: Int, Codable {
+    enum GameStatus: Int, Codable, Equatable, Sendable {
         case upcoming = 1
         case live = 2
         case finished = 3
@@ -211,7 +232,7 @@ struct Game: Identifiable {
 /// Game state from a box score. The scoreboard feeds can lag the box score by
 /// minutes (including staying live after the final buzzer), so a box score that
 /// is further along supplies the displayed score, status and clock.
-struct GameProgress: Codable, Equatable {
+struct GameProgress: Codable, Equatable, Sendable {
     let status: Game.GameStatus
     let statusText: String
     let period: Int
@@ -230,7 +251,7 @@ struct GameProgress: Codable, Equatable {
     }
 }
 
-struct Team: Identifiable {
+struct Team: Identifiable, Codable, Equatable, Sendable {
     var id: String { tricode }
     let tricode: String
     let score: Int
@@ -244,7 +265,7 @@ struct Team: Identifiable {
     }
 }
 
-struct Player: Identifiable {
+struct Player: Identifiable, Codable, Equatable, Sendable {
     var id: String = UUID().uuidString
     let name: String
     let nameI: String
@@ -302,59 +323,76 @@ struct Player: Identifiable {
 enum ScoreDate {
     static let upcomingOffsets = [1, 2, 3]
     static let trackedOffsets = [0, -1] + upcomingOffsets
-    private static let lock = NSLock()
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        return formatter
-    }()
-    private static let isoFractionalFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions.insert(.withFractionalSeconds)
-        return formatter
-    }()
 
-    private static func calendar(in timeZone: TimeZone) -> Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timeZone
-        return calendar
+    private final class FormatterCache: @unchecked Sendable {
+        let lock = NSLock()
+        let isoFormatter = ISO8601DateFormatter()
+        let isoFractionalFormatter: ISO8601DateFormatter = {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions.insert(.withFractionalSeconds)
+            return formatter
+        }()
+        var dateToolsByTimeZone: [TimeZone: (calendar: Calendar, formatter: DateFormatter)] = [:]
+
+        /// Caller must hold `lock`.
+        func dateTools(in timeZone: TimeZone) -> (calendar: Calendar, formatter: DateFormatter) {
+            if timeZone != .autoupdatingCurrent, let cached = dateToolsByTimeZone[timeZone] {
+                return cached
+            }
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = timeZone
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = calendar
+            formatter.timeZone = timeZone
+            formatter.dateFormat = "yyyy-MM-dd"
+            let tools = (calendar: calendar, formatter: formatter)
+            if timeZone != .autoupdatingCurrent {
+                if dateToolsByTimeZone.count >= 16 {
+                    dateToolsByTimeZone.removeAll(keepingCapacity: true)
+                }
+                dateToolsByTimeZone[timeZone] = tools
+            }
+            return tools
+        }
     }
 
-    private static func formatter(in timeZone: TimeZone) -> DateFormatter {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = calendar(in: timeZone)
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }
+    private static let cache = FormatterCache()
 
     static func date(for key: String, timeZone: TimeZone = Calendar.current.timeZone) -> Date? {
-        let formatter = formatter(in: timeZone)
+        cache.lock.lock()
+        defer { cache.lock.unlock() }
+        let formatter = cache.dateTools(in: timeZone).formatter
         guard let date = formatter.date(from: key), formatter.string(from: date) == key else { return nil }
         return date
     }
 
     static func interval(for key: String, timeZone: TimeZone = Calendar.current.timeZone) -> DateInterval? {
-        guard let date = date(for: key, timeZone: timeZone) else { return nil }
-        return calendar(in: timeZone).dateInterval(of: .day, for: date)
+        cache.lock.lock()
+        defer { cache.lock.unlock() }
+        let tools = cache.dateTools(in: timeZone)
+        guard let date = tools.formatter.date(from: key), tools.formatter.string(from: date) == key else { return nil }
+        return tools.calendar.dateInterval(of: .day, for: date)
     }
 
     static func key(offset: Int = 0, now: Date = Date(), timeZone: TimeZone = Calendar.current.timeZone) -> String {
-        let calendar = calendar(in: timeZone)
-        let date = calendar.date(byAdding: .day, value: offset, to: now) ?? now
-        return formatter(in: timeZone).string(from: date)
+        cache.lock.lock()
+        defer { cache.lock.unlock() }
+        let tools = cache.dateTools(in: timeZone)
+        let date = offset == 0 ? now : (tools.calendar.date(byAdding: .day, value: offset, to: now) ?? now)
+        return tools.formatter.string(from: date)
     }
 
     static func tipoffDate(from value: String) -> Date? {
         guard !value.isEmpty else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-        if let date = isoFormatter.date(from: value) { return date }
-        return isoFractionalFormatter.date(from: value)
+        cache.lock.lock()
+        defer { cache.lock.unlock() }
+        if let date = cache.isoFormatter.date(from: value) { return date }
+        return cache.isoFractionalFormatter.date(from: value)
     }
 }
 
-struct LeagueDate: Hashable {
+struct LeagueDate: Hashable, Sendable {
     let key: String
     private static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)

@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-protocol NBAFetching {
+protocol NBAFetching: Sendable {
     // The date is a local calendar day, not an NBA schedule date.
     func scoreboard(for date: String) async throws -> [Game]
     func leaders(for game: Game) async throws -> CachedBoxScore
@@ -20,6 +20,151 @@ enum NBAError: LocalizedError {
         case .invalidResponse: return "NBA returned incomplete data. We'll retry automatically."
         case .wrongDate: return "The live scoreboard belongs to another date."
         case .responseTooLarge: return "NBA returned unusually large data. We'll retry automatically."
+        }
+    }
+}
+
+struct BoundedHTTPResponse: Sendable {
+    let statusCode: Int
+    let data: Data
+    let etag: String?
+    let lastModified: String?
+}
+
+/// Shared bounded URLSession download helper enforcing both declared
+/// `Content-Length` and streamed byte limits with clean task cancellation.
+enum BoundedHTTPFetcher {
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var statusCode = 0
+        var etag: String?
+        var lastModified: String?
+        var data = Data()
+        var responseError: Error?
+        var completed = false
+        weak var task: URLSessionDataTask?
+    }
+
+    private final class Delegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        let state: State
+        let maxBytes: Int
+        let acceptNotModified: Bool
+        let continuation: CheckedContinuation<BoundedHTTPResponse, Error>
+
+        init(
+            state: State,
+            maxBytes: Int,
+            acceptNotModified: Bool,
+            continuation: CheckedContinuation<BoundedHTTPResponse, Error>
+        ) {
+            self.state = state
+            self.maxBytes = maxBytes
+            self.acceptNotModified = acceptNotModified
+            self.continuation = continuation
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            dataTask: URLSessionDataTask,
+            didReceive response: URLResponse,
+            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+        ) {
+            state.lock.lock()
+            defer { state.lock.unlock() }
+            guard let http = response as? HTTPURLResponse else {
+                state.responseError = NBAError.invalidResponse
+                completionHandler(.cancel)
+                return
+            }
+            state.statusCode = http.statusCode
+            state.etag = http.value(forHTTPHeaderField: "ETag")
+            state.lastModified = http.value(forHTTPHeaderField: "Last-Modified")
+            if http.statusCode == 304 && acceptNotModified {
+                completionHandler(.allow)
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                state.responseError = NBAError.http(http.statusCode)
+                completionHandler(.cancel)
+                return
+            }
+            guard response.expectedContentLength <= Int64(maxBytes) else {
+                state.responseError = NBAError.responseTooLarge
+                completionHandler(.cancel)
+                return
+            }
+            state.data.reserveCapacity(min(maxBytes, max(0, Int(response.expectedContentLength))))
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+            state.lock.lock()
+            defer { state.lock.unlock() }
+            guard state.responseError == nil else { return }
+            guard state.data.count + chunk.count <= maxBytes else {
+                state.responseError = NBAError.responseTooLarge
+                dataTask.cancel()
+                return
+            }
+            state.data.append(chunk)
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            state.lock.lock()
+            guard !state.completed else {
+                state.lock.unlock()
+                return
+            }
+            state.completed = true
+            let responseError = state.responseError
+            let outcome = BoundedHTTPResponse(
+                statusCode: state.statusCode,
+                data: state.data,
+                etag: state.etag,
+                lastModified: state.lastModified
+            )
+            state.lock.unlock()
+
+            if let responseError {
+                continuation.resume(throwing: responseError)
+            } else if let error {
+                continuation.resume(throwing: error)
+            } else {
+                continuation.resume(returning: outcome)
+            }
+        }
+    }
+
+    static func fetch(
+        request: URLRequest,
+        using session: URLSession,
+        maxBytes: Int,
+        acceptNotModified: Bool = false
+    ) async throws -> BoundedHTTPResponse {
+        let state = State()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let delegate = Delegate(
+                    state: state,
+                    maxBytes: maxBytes,
+                    acceptNotModified: acceptNotModified,
+                    continuation: continuation
+                )
+                let task = session.dataTask(with: request)
+                task.delegate = delegate
+                state.lock.lock()
+                state.task = task
+                state.lock.unlock()
+                if Task.isCancelled {
+                    task.cancel()
+                }
+                task.resume()
+            }
+        } onCancel: {
+            state.lock.lock()
+            let task = state.task
+            state.lock.unlock()
+            task?.cancel()
         }
     }
 }
@@ -63,21 +208,51 @@ extension APIGame: ScoreboardGame {
 /// Transport and decoding live off the UI actor. Detail requests use a separate
 /// connection pool so a slow box score can never hold up the scoreboard.
 actor NBAClient: NBAFetching {
+    private struct CachedBroadcaster {
+        let name: String
+        let cachedAt: Date
+    }
+    private struct ConditionalCacheEntry {
+        let etag: String?
+        let lastModified: String?
+        let byteCount: Int
+        let decoded: any Sendable
+        var touchedAt: Date
+    }
+
+    static let maxConditionalEntries = 24
+    static let maxConditionalBytes = 8 * 1024 * 1024
+    private static let negativeBroadcasterTTL: TimeInterval = 21_600
+
     private let session: URLSession
     private let detailSession: URLSession
     private let cache: BoxScoreCache
-    private let now: () -> Date
+    private let now: @Sendable () -> Date
+    private let decoder = JSONDecoder()
     private var scoreboardTasks: [LeagueDate: Task<[Game], Error>] = [:]
+    // Bounded conditional-request cache for CDN JSON endpoints (ETag /
+    // Last-Modified -> 304 Not Modified). Caches validated decoded responses so
+    // 304 skips both body transfer and JSON decoding. Never used for stats.nba.com.
+    private var conditionalCache: [URL: ConditionalCacheEntry] = [:]
+    private(set) var decodeCount = 0
     // The CDN live scoreboard omits national TV, which the dated stats feed has.
-    // Learned per game ID so every tab shows the same broadcaster badges.
-    private var broadcasters: [String: String] = [:]
+    // Learned per game ID so every tab shows the same broadcaster badges; empty
+    // strings negative-cache local-only games to stop 30-minute stats retries.
+    private var broadcasters: [String: CachedBroadcaster] = [:]
     private var broadcasterAttempts: [LeagueDate: Date] = [:]
     // Debug-only WNBA override (NBA_LEAGUE=10, see AGENTS.md): repoints the whole
     // live pipeline at the WNBA's CDN for testing before the NBA season starts.
     // Release builds never read the environment and cannot enter this mode.
     private let usesWNBAEndpoints: Bool
 
-    init(session: URLSession? = nil, cache: BoxScoreCache = .shared, now: @escaping () -> Date = Date.init) {
+    var conditionalCacheCount: Int { conditionalCache.count }
+    var conditionalCacheBytes: Int { conditionalCache.values.reduce(0) { $0 + $1.byteCount } }
+
+    init(
+        session: URLSession? = nil,
+        cache: BoxScoreCache = .shared,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         func makeSession() -> URLSession {
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = 8
@@ -135,23 +310,30 @@ actor NBAClient: NBAFetching {
     }
 
     private func loadLeagueScoreboard(for date: LeagueDate) async throws -> [Game] {
-        if LeagueDate.mayUseLiveCDN(date, now: now()) {
+        let current = now()
+        if LeagueDate.mayUseLiveCDN(date, now: current) {
             do {
                 let response: CDNScoreboardResponse = try await load(
                     usesWNBAEndpoints
                         ? "https://cdn.wnba.com/static/json/liveData/scoreboard/todaysScoreboard_10.json"
                         : "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json",
-                    using: session
+                    using: session,
+                    allowConditional: true
                 )
                 guard response.scoreboard.gameDate == date.key else { throw NBAError.wrongDate }
                 // Empty is a successful response, not a reason to hit another API.
                 let games = try Self.decodeGames(response.scoreboard.games)
-                if games.contains(where: { $0.broadcaster.isEmpty && broadcasters[$0.id] == nil }) {
+                let lookupTime = now()
+                if games.contains(where: { $0.broadcaster.isEmpty && knownBroadcaster(for: $0.id, at: lookupTime) == nil }) {
                     requestBroadcasters(for: date)
                 }
                 return games.map { game in
                     var game = game
-                    if game.broadcaster.isEmpty, let known = broadcasters[game.id] { game.broadcaster = known }
+                    if game.broadcaster.isEmpty,
+                       let known = knownBroadcaster(for: game.id, at: lookupTime),
+                       !known.isEmpty {
+                        game.broadcaster = known
+                    }
                     return game
                 }
             } catch {
@@ -169,7 +351,8 @@ actor NBAClient: NBAFetching {
             usesWNBAEndpoints
                 ? "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date.key)&LeagueID=10"
                 : "https://stats.nba.com/stats/scoreboardv3?GameDate=\(date.key)&LeagueID=00",
-            using: session
+            using: session,
+            allowConditional: false
         )
         return try Self.decodeGames(response.scoreboard.games)
     }
@@ -189,9 +372,28 @@ actor NBAClient: NBAFetching {
         }
     }
 
+    private func knownBroadcaster(for gameID: String, at current: Date) -> String? {
+        guard let entry = broadcasters[gameID] else { return nil }
+        if !entry.name.isEmpty { return entry.name }
+        let age = current.timeIntervalSince(entry.cachedAt)
+        return (age >= 0 && age < Self.negativeBroadcasterTTL) ? "" : nil
+    }
+
     private func remember(broadcastersFrom games: [Game]) {
+        let current = now()
+        broadcasters = broadcasters.filter { _, entry in
+            if !entry.name.isEmpty { return true }
+            let age = current.timeIntervalSince(entry.cachedAt)
+            return age >= 0 && age < Self.negativeBroadcasterTTL
+        }
         if broadcasters.count > 4 * NBAFeedLimits.games { broadcasters.removeAll() }
-        for game in games where !game.broadcaster.isEmpty { broadcasters[game.id] = game.broadcaster }
+        for game in games {
+            if !game.broadcaster.isEmpty {
+                broadcasters[game.id] = CachedBroadcaster(name: game.broadcaster, cachedAt: current)
+            } else if broadcasters[game.id]?.name.isEmpty != false {
+                broadcasters[game.id] = CachedBroadcaster(name: "", cachedAt: current)
+            }
+        }
     }
 
     func leaders(for game: Game) async throws -> CachedBoxScore {
@@ -203,7 +405,8 @@ actor NBAClient: NBAFetching {
             usesWNBAEndpoints
                 ? "https://cdn.wnba.com/static/json/liveData/boxscore/boxscore_\(game.id).json"
                 : "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_\(game.id).json",
-            using: detailSession
+            using: detailSession,
+            allowConditional: true
         )
         guard let box = response.game, box.gameId == game.id,
               let home = box.homeTeam, let away = box.awayTeam,
@@ -216,7 +419,8 @@ actor NBAClient: NBAFetching {
             homeTeam: cachedTeam(tricode: home.teamTricode ?? game.homeTeam.tricode, players: homePlayers),
             awayTeam: cachedTeam(tricode: away.teamTricode ?? game.awayTeam.tricode, players: awayPlayers),
             homeScore: home.score, awayScore: away.score,
-            progress: Self.progress(from: box)
+            progress: Self.progress(from: box),
+            cachedAt: now()
         )
         // Never promote an in-progress box score into the final-game cache.
         if game.status == .finished, box.gameStatus == 3,
@@ -226,117 +430,111 @@ actor NBAClient: NBAFetching {
         return result
     }
 
-    private func load<T: Decodable>(_ address: String, using session: URLSession) async throws -> T {
+    private func load<T: Decodable & Sendable>(
+        _ address: String,
+        using session: URLSession,
+        allowConditional: Bool
+    ) async throws -> T {
         guard let url = URL(string: address) else { throw NBAError.invalidResponse }
+        var request = makeRequest(url: url)
+        let cachedEntry = allowConditional ? conditionalCache[url] : nil
+        if let cachedEntry {
+            if let etag = cachedEntry.etag, !etag.isEmpty {
+                request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+            }
+            if let lastModified = cachedEntry.lastModified, !lastModified.isEmpty {
+                request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since")
+            }
+        }
+        var outcome = try await BoundedHTTPFetcher.fetch(
+            request: request,
+            using: session,
+            maxBytes: NBAFeedLimits.responseBytes,
+            acceptNotModified: cachedEntry != nil
+        )
+        try Task.checkCancellation()
+
+        if outcome.statusCode == 304 {
+            if let current = conditionalCache[url],
+               let cachedEntry,
+               (current.etag != cachedEntry.etag || current.lastModified != cachedEntry.lastModified),
+               let decoded = current.decoded as? T {
+                // Another concurrent request already updated the cache with a newer validator.
+                return decoded
+            }
+            if let entry = conditionalCache[url] ?? cachedEntry,
+               let decoded = entry.decoded as? T {
+                storeConditionalEntry(
+                    for: url,
+                    etag: outcome.etag ?? entry.etag,
+                    lastModified: outcome.lastModified ?? entry.lastModified,
+                    byteCount: entry.byteCount,
+                    decoded: entry.decoded
+                )
+                return decoded
+            }
+            // Defensive fallback if entry cannot be reused.
+            outcome = try await BoundedHTTPFetcher.fetch(
+                request: makeRequest(url: url),
+                using: session,
+                maxBytes: NBAFeedLimits.responseBytes,
+                acceptNotModified: false
+            )
+            try Task.checkCancellation()
+        }
+
+        let decoded = try decoder.decode(T.self, from: outcome.data)
+        decodeCount += 1
+        if allowConditional,
+           (outcome.etag != nil || outcome.lastModified != nil),
+           outcome.data.count <= NBAFeedLimits.responseBytes {
+            storeConditionalEntry(
+                for: url,
+                etag: outcome.etag,
+                lastModified: outcome.lastModified,
+                byteCount: outcome.data.count,
+                decoded: decoded
+            )
+        }
+        return decoded
+        // Retrying belongs to the polling coordinator, not nested request loops.
+    }
+
+    private func makeRequest(url: URL) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("https://www.nba.com", forHTTPHeaderField: "Origin")
         request.setValue("https://www.nba.com/", forHTTPHeaderField: "Referer")
         // URLSession supplies Host, Connection and compression headers correctly.
-        let data = try await fetchBoundedData(for: request, using: session)
-        try Task.checkCancellation()
-        return try JSONDecoder().decode(T.self, from: data)
-        // Retrying belongs to the polling coordinator, not nested request loops.
+        return request
     }
 
-    private func fetchBoundedData(for request: URLRequest, using session: URLSession) async throws -> Data {
-        final class BoundedState: @unchecked Sendable {
-            let lock = NSLock()
-            var data = Data()
-            var responseError: Error?
-            var completed = false
-            weak var task: URLSessionDataTask?
+    private func storeConditionalEntry(
+        for url: URL,
+        etag: String?,
+        lastModified: String?,
+        byteCount: Int,
+        decoded: any Sendable
+    ) {
+        conditionalCache[url] = ConditionalCacheEntry(
+            etag: etag,
+            lastModified: lastModified,
+            byteCount: byteCount,
+            decoded: decoded,
+            touchedAt: now()
+        )
+        var totalBytes = conditionalCache.values.reduce(0) { $0 + $1.byteCount }
+        if conditionalCache.count <= Self.maxConditionalEntries && totalBytes <= Self.maxConditionalBytes {
+            return
         }
-
-        final class BoundedDelegate: NSObject, URLSessionDataDelegate {
-            let state: BoundedState
-            let continuation: CheckedContinuation<Data, Error>
-
-            init(state: BoundedState, continuation: CheckedContinuation<Data, Error>) {
-                self.state = state
-                self.continuation = continuation
+        let sortedByOldest = conditionalCache.sorted { $0.value.touchedAt < $1.value.touchedAt }
+        for (oldURL, entry) in sortedByOldest where oldURL != url {
+            guard conditionalCache.count > Self.maxConditionalEntries || totalBytes > Self.maxConditionalBytes else {
+                break
             }
-
-            func urlSession(
-                _ session: URLSession,
-                dataTask: URLSessionDataTask,
-                didReceive response: URLResponse,
-                completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
-            ) {
-                state.lock.lock()
-                defer { state.lock.unlock() }
-                guard let http = response as? HTTPURLResponse else {
-                    state.responseError = NBAError.invalidResponse
-                    completionHandler(.cancel)
-                    return
-                }
-                guard (200..<300).contains(http.statusCode) else {
-                    state.responseError = NBAError.http(http.statusCode)
-                    completionHandler(.cancel)
-                    return
-                }
-                guard response.expectedContentLength <= Int64(NBAFeedLimits.responseBytes) else {
-                    state.responseError = NBAError.responseTooLarge
-                    completionHandler(.cancel)
-                    return
-                }
-                state.data.reserveCapacity(min(NBAFeedLimits.responseBytes, max(0, Int(response.expectedContentLength))))
-                completionHandler(.allow)
-            }
-
-            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
-                state.lock.lock()
-                defer { state.lock.unlock() }
-                guard state.responseError == nil else { return }
-                guard state.data.count + chunk.count <= NBAFeedLimits.responseBytes else {
-                    state.responseError = NBAError.responseTooLarge
-                    dataTask.cancel()
-                    return
-                }
-                state.data.append(chunk)
-            }
-
-            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-                state.lock.lock()
-                guard !state.completed else {
-                    state.lock.unlock()
-                    return
-                }
-                state.completed = true
-                let responseError = state.responseError
-                let data = state.data
-                state.lock.unlock()
-
-                if let responseError {
-                    continuation.resume(throwing: responseError)
-                } else if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: data)
-                }
-            }
-        }
-
-        let state = BoundedState()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let delegate = BoundedDelegate(state: state, continuation: continuation)
-                let task = session.dataTask(with: request)
-                task.delegate = delegate
-                state.lock.lock()
-                state.task = task
-                state.lock.unlock()
-                if Task.isCancelled {
-                    task.cancel()
-                }
-                task.resume()
-            }
-        } onCancel: {
-            state.lock.lock()
-            let task = state.task
-            state.lock.unlock()
-            task?.cancel()
+            conditionalCache.removeValue(forKey: oldURL)
+            totalBytes -= entry.byteCount
         }
     }
 

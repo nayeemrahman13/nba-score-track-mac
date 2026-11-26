@@ -24,7 +24,7 @@ The regression check is one Swift executable. From the repository root, run thes
 ```sh
 xcrun swiftc -parse-as-library -module-cache-path /tmp/nba-swift-module-cache \
   NBAScoreTracker/NBAScoreTracker/Models/Game.swift \
-  NBAScoreTracker/NBAScoreTracker/Services/{NBAClient,NBAService,BoxScoreCache}.swift \
+  NBAScoreTracker/NBAScoreTracker/Services/{NBAClient,NBAService,BoxScoreCache,LogoCache,NetworkMonitor,ScoreboardSnapshotCache}.swift \
   NBAScoreTracker/Verification/ReviewRegressions.swift \
   -o /tmp/nba-review-regressions
 /tmp/nba-review-regressions
@@ -39,7 +39,7 @@ The executable checks these cases:
 - A box score ahead of a lagging scoreboard
 - Scores that do not move backward
 - Final scoreboard totals kept once both feeds are final
-- Broadcaster fill for **Today**
+- Broadcaster fill for **Today** and negative caching for local-only games
 - Trimmed status text
 - Local date grouping in Hong Kong
 - Pacific dates that span two Eastern schedules, with the next midnight excluded
@@ -52,7 +52,12 @@ The executable checks these cases:
 - Wake during an in-flight request
 - Local midnight during an in-flight request
 - Concurrent refreshes joined into one request
-- A separate refresh for each future day
+- On-demand loading for future days (+1..+3), independent per-day refresh, and decoupled lanes so a slow selected or unselected future day never blocks **Today** polling cycles
+- Hidden-window and offline cancellation of polling, in-flight refreshes, and follow-up enrichment; remaining-window sleep alignment and immediate interrupted-enrichment resume on reopen; settled **Yesterday** 30-minute TTL; and `NWPathMonitor` offline deferral + reconnect backoff reset
+- Settled final skip (preserving aged `BoxScoreCache` expiry, score-correction invalidation, and TTL expiry), dynamic leader enrichment priority, and guarded `@Published` emissions
+- `LogoCache` ImageIO downsampling (≤ 66 px), synchronous L1 hit, L2 disk reload, path-traversal tricode rejection, and failure cooldown
+- CDN conditional `If-None-Match` / `If-Modified-Since` → `304 Not Modified` decoded-response caching (skipping JSON decode, enforcing the 24-entry / 8 MiB cap under concurrent eviction, and protecting newer ETags against stale concurrent 304s; non-application to `stats.nba.com`)
+- `ScoreboardSnapshotCache` cold-start hydration (preserving `progressByGame` provenance against lagging refreshes), debounced save, expiry, league isolation, `gameTimeUTC` validation, and oversize/corruption rejection
 - Player IDs kept across a change in rank and a cache reload
 - Missing player IDs
 - Old cache records that have no player ID
@@ -64,7 +69,7 @@ The executable checks these cases:
 - Field limits and collection limits
 - A valid box score next to an oversized player list
 - Cache expiry
-- The disk byte budget
+- The disk byte budget (including debounced save pruning)
 - Oversized cache files and invalid cache paths
 - Leader tie breaks
 - A follow-up leader pass when a game starts during a batch

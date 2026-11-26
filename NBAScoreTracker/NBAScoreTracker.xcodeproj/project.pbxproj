@@ -22,6 +22,9 @@
 		A1000013 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A9100002 /* Sparkle */; };
 		A1000014 /* UpdateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000013 /* UpdateManager.swift */; };
 		A1000015 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A2000015 /* PrivacyInfo.xcprivacy */; };
+		A1000016 /* LogoCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000017 /* LogoCache.swift */; };
+		A1000017 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000018 /* NetworkMonitor.swift */; };
+		A1000018 /* ScoreboardSnapshotCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000019 /* ScoreboardSnapshotCache.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +45,9 @@
 		A2000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000015 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A2000016 /* Updates.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Updates.xcconfig; sourceTree = "<group>"; };
+		A2000017 /* LogoCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogoCache.swift; sourceTree = "<group>"; };
+		A2000018 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		A2000019 /* ScoreboardSnapshotCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreboardSnapshotCache.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -113,6 +119,9 @@
 				A2000005 /* NBAService.swift */,
 				A2000012 /* NBAClient.swift */,
 				A2000009 /* BoxScoreCache.swift */,
+				A2000017 /* LogoCache.swift */,
+				A2000018 /* NetworkMonitor.swift */,
+				A2000019 /* ScoreboardSnapshotCache.swift */,
 				A2000010 /* LaunchAtLoginManager.swift */,
 				A2000013 /* UpdateManager.swift */,
 			);
@@ -202,6 +211,9 @@
 				A1000012 /* NBAClient.swift in Sources */,
 				A1000014 /* UpdateManager.swift in Sources */,
 				A1000009 /* BoxScoreCache.swift in Sources */,
+				A1000016 /* LogoCache.swift in Sources */,
+				A1000017 /* NetworkMonitor.swift in Sources */,
+				A1000018 /* ScoreboardSnapshotCache.swift in Sources */,
 				A1000010 /* LaunchAtLoginManager.swift in Sources */,
 				A1000006 /* GameRowView.swift in Sources */,
 				A1000007 /* LeadersView.swift in Sources */,
@@ -369,6 +381,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.nayeemrahman.NBAScoreTracker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -413,6 +426,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.nayeemrahman.NBAScoreTracker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
